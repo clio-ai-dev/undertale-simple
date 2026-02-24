@@ -22,11 +22,83 @@
   canvas {
     border: 3px solid #fff;
     image-rendering: pixelated;
+    max-width: 100vw;
+    max-height: 70vh;
+    touch-action: none;
   }
+
+  #touch-controls {
+    display: none;
+    position: fixed;
+    bottom: 10px;
+    left: 0;
+    right: 0;
+    padding: 10px;
+    z-index: 10;
+  }
+
+  @media (pointer: coarse) {
+    #touch-controls { display: flex; justify-content: space-between; align-items: center; }
+  }
+
+  .dpad {
+    display: grid;
+    grid-template: 50px 50px 50px / 50px 50px 50px;
+    gap: 4px;
+  }
+
+  .dpad button, .action-buttons button {
+    background: rgba(255,255,255,0.15);
+    border: 2px solid rgba(255,255,255,0.4);
+    border-radius: 10px;
+    color: #fff;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 18px;
+    -webkit-user-select: none;
+    user-select: none;
+    touch-action: manipulation;
+  }
+
+  .dpad button:active, .action-buttons button:active {
+    background: rgba(255,255,255,0.35);
+  }
+
+  .dpad .up { grid-column: 2; grid-row: 1; }
+  .dpad .left { grid-column: 1; grid-row: 2; }
+  .dpad .right { grid-column: 3; grid-row: 2; }
+  .dpad .down { grid-column: 2; grid-row: 3; }
+
+  .action-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .action-buttons button {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    font-size: 16px;
+  }
+
+  .action-buttons .btn-z { background: rgba(255,0,0,0.3); border-color: #f44; }
+  .action-buttons .btn-x { background: rgba(100,100,255,0.3); border-color: #88f; }
 </style>
 </head>
 <body>
 <canvas id="game" width="640" height="480"></canvas>
+<div id="touch-controls">
+  <div class="dpad">
+    <button class="up" data-key="ArrowUp">▲</button>
+    <button class="left" data-key="ArrowLeft">◀</button>
+    <button class="right" data-key="ArrowRight">▶</button>
+    <button class="down" data-key="ArrowDown">▼</button>
+  </div>
+  <div class="action-buttons">
+    <button class="btn-z" data-key="z">Z</button>
+    <button class="btn-x" data-key="x">X</button>
+  </div>
+</div>
 <script>
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -78,6 +150,14 @@ const keys = {};
 let justPressed = {};
 document.addEventListener('keydown', e => { justPressed[e.key] = !keys[e.key]; keys[e.key] = true; });
 document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// Touch controls
+document.querySelectorAll('[data-key]').forEach(btn => {
+  const key = btn.dataset.key;
+  btn.addEventListener('touchstart', e => { e.preventDefault(); justPressed[key] = !keys[key]; keys[key] = true; });
+  btn.addEventListener('touchend', e => { e.preventDefault(); keys[key] = false; });
+  btn.addEventListener('touchcancel', e => { keys[key] = false; });
+});
 
 // ── Drawing helpers ──
 function drawText(text, x, y, color = '#fff', size = 16) {
