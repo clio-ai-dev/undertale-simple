@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UNDERTALE - Simple Edition</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: 'Press Start 2P', monospace;
+    overflow: hidden;
+  }
+
+  canvas {
+    border: 3px solid #fff;
+    image-rendering: pixelated;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="640" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// ── State ──
+const STATE = { MENU: 0, OVERWORLD: 1, BATTLE: 2, BATTLE_MENU: 3, BATTLE_ACT: 4, BATTLE_DODGE: 5, ENEMY_TURN_TEXT: 6, WIN: 7, GAME_OVER: 8 };
+let state = STATE.MENU;
+let menuSel = 0;
+let battleSel = 0;
+let actSel = 0;
+
+// Player
+const player = { name: 'CHARA', hp: 20, maxHp: 20, lv: 1, atk: 10, x: 304, y: 400 };
+
+// Overworld player
+const ow = { x: 320, y: 360, speed: 3 };
+
+// Enemies
+const enemies = [
+  { name: 'Froggit', hp: 20, maxHp: 20, atk: 5, spareable: false, compliments: 0, dialog: ['Ribbit ribbit...', 'Life is difficult\nfor a frog.', 'Meow? (Ribbit.)'] },
+  { name: 'Whimsun', hp: 10, maxHp: 10, atk: 3, spareable: false, compliments: 0, dialog: ['...I\'m sorry...', 'Please don\'t\nhurt me...', 'I just want\nto go home...'] },
+  { name: 'Flowey', hp: 50, maxHp: 50, atk: 8, spareable: false, compliments: 0, dialog: ['In this world,\nit\'s KILL or\nBE KILLED!', 'You IDIOT!', 'Die. Die. DIE!'] },
+];
+let enemy = null;
+let battleMsg = '';
+let msgTimer = 0;
+let turnPhase = 0; // 0=player, 1=enemy
+let spareable = false;
+let killCount = 0;
+let spareCount = 0;
+
+// Dodge minigame (bullet hell)
+const dodgeBox = { x: 170, y: 180, w: 300, h: 160 };
+const heart = { x: 320, y: 280, speed: 4 };
+const bullets = [];
+let dodgeTimer = 0;
+const DODGE_DURATION = 180; // frames (~3 sec)
+
+// Overworld NPCs / trigger zones
+const triggerZones = [
+  { x: 280, y: 100, w: 80, h: 40, type: 'battle', enemyIdx: 0 },
+  { x: 100, y: 250, w: 60, h: 40, type: 'battle', enemyIdx: 1 },
+  { x: 500, y: 150, w: 60, h: 50, type: 'battle', enemyIdx: 2 },
+];
+let usedZones = new Set();
+
+// Input
+const keys = {};
+let justPressed = {};
+document.addEventListener('keydown', e => { justPressed[e.key] = !keys[e.key]; keys[e.key] = true; });
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// ── Drawing helpers ──
+function drawText(text, x, y, color = '#fff', size = 16) {
+  ctx.fillStyle = color;
+  ctx.font = `${size}px 'Press Start 2P', monospace`;
+  const lines = text.split('\n');
+  lines.forEach((line, i) => ctx.fillText(line, x, y + i * (size + 6)));
+}
+
+function drawHeart(x, y, size = 14, color = '#f00') {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x, y + size * 0.3);
+  ctx.bezierCurveTo(x, y, x - size * 0.5, y, x - size * 0.5, y + size * 0.3);
+  ctx.bezierCurveTo(x - size * 0.5, y + size * 0.6, x, y + size * 0.8, x, y + size);
+  ctx.bezierCurveTo(x, y + size * 0.8, x + size * 0.5, y + size * 0.6, x + size * 0.5, y + size * 0.3);
+  ctx.bezierCurveTo(x + size * 0.5, y, x, y, x, y + size * 0.3);
+  ctx.fill();
+}
+
+function drawBox(x, y, w, h, fill = '#000', stroke = '#fff', lw = 3) {
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = lw;
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeRect(x, y, w, h);
+}
+
+function drawHPBar(x, y, w, hp, maxHp, label) {
+  drawText(label, x, y, '#fff', 10);
+  const bx = x + label.length * 7 + 10;
+  ctx.fillStyle = '#600';
+  ctx.fillRect(bx, y - 10, w, 14);
+  ctx.fillStyle = hp > maxHp * 0.3 ? '#ff0' : '#f00';
+  ctx.fillRect(bx, y - 10, w * (hp / maxHp), 14);
+  drawText(`${hp} / ${maxHp}`, bx + w + 10, y, '#fff', 10);
+}
+
+// ── Enemy sprites (procedural) ──
+function drawEnemySprite(e, x, y) {
+  ctx.fillStyle = '#fff';
+  if (e.name === 'Froggit') {
+    // Frog shape
+    ctx.beginPath();
+    ctx.ellipse(x, y, 40, 30, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.arc(x - 15, y - 10, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x + 15, y - 10, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(x - 15, y - 12, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x + 15, y - 12, 3, 0, Math.PI * 2); ctx.fill();
+    // Legs
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(x - 35, y + 20, 18, 10);
+    ctx.fillRect(x + 17, y + 20, 18, 10);
+  } else if (e.name === 'Whimsun') {
+    // Butterfly-ish
+    const t = Date.now() / 300;
+    const bobY = Math.sin(t) * 8;
+    ctx.beginPath(); ctx.ellipse(x, y + bobY, 12, 18, 0, 0, Math.PI * 2); ctx.fill();
+    // Wings
+    ctx.beginPath(); ctx.ellipse(x - 25, y - 5 + bobY, 18, 25, -0.3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x + 25, y - 5 + bobY, 18, 25, 0.3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.arc(x - 5, y - 5 + bobY, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x + 5, y - 5 + bobY, 3, 0, Math.PI * 2); ctx.fill();
+  } else if (e.name === 'Flowey') {
+    // Flower
+    const petals = 6;
+    for (let i = 0; i < petals; i++) {
+      const a = (Math.PI * 2 / petals) * i;
+      ctx.fillStyle = '#ff0';
+      ctx.beginPath();
+      ctx.ellipse(x + Math.cos(a) * 25, y - 20 + Math.sin(a) * 25, 16, 16, a, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(x, y - 20, 18, 0, Math.PI * 2); ctx.fill();
+    // Face
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.arc(x - 7, y - 25, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x + 7, y - 25, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x, y - 14, 8, 0, Math.PI); ctx.fill();
+    // Stem
+    ctx.fillStyle = '#0a0';
+    ctx.fillRect(x - 4, y + 5, 8, 40);
+  }
+}
+
+// ── Bullet patterns ──
+function spawnBullets(enemyName) {
+  bullets.length = 0;
+  if (enemyName === 'Froggit') {
+    // Flies bouncing around
+    for (let i = 0; i < 6; i++) {
+      bullets.push({
+        x: dodgeBox.x + Math.random() * dodgeBox.w,
+        y: dodgeBox.y + Math.random() * dodgeBox.h,
+        vx: (Math.random() - 0.5) * 4,
+        vy: (Math.random() - 0.5) * 4,
+        r: 6, type: 'bounce'
+      });
+    }
+  } else if (enemyName === 'Whimsun') {
+    // Tears falling
+    for (let i = 0; i < 8; i++) {
+      bullets.push({
+        x: dodgeBox.x + 20 + Math.random() * (dodgeBox.w - 40),
+        y: dodgeBox.y - 10 - Math.random() * 60,
+        vx: 0, vy: 1.5 + Math.random() * 2,
+        r: 5, type: 'fall'
+      });
+    }
+  } else if (enemyName === 'Flowey') {
+    // Pellets from all sides
+    for (let i = 0; i < 12; i++) {
+      const side = i % 4;
+      let bx, by, bvx, bvy;
+      if (side === 0) { bx = dodgeBox.x; by = dodgeBox.y + Math.random() * dodgeBox.h; bvx = 2 + Math.random() * 2; bvy = (Math.random() - 0.5) * 2; }
+      else if (side === 1) { bx = dodgeBox.x + dodgeBox.w; by = dodgeBox.y + Math.random() * dodgeBox.h; bvx = -(2 + Math.random() * 2); bvy = (Math.random() - 0.5) * 2; }
+      else if (side === 2) { bx = dodgeBox.x + Math.random() * dodgeBox.w; by = dodgeBox.y; bvx = (Math.random() - 0.5) * 2; bvy = 2 + Math.random() * 2; }
+      else { bx = dodgeBox.x + Math.random() * dodgeBox.w; by = dodgeBox.y + dodgeBox.h; bvx = (Math.random() - 0.5) * 2; bvy = -(2 + Math.random() * 2); }
+      bullets.push({ x: bx, y: by, vx: bvx, vy: bvy, r: 5, type: 'linear' });
+    }
+  }
+}
+
+function updateBullets() {
+  bullets.forEach(b => {
+    b.x += b.vx;
+    b.y += b.vy;
+    if (b.type === 'bounce') {
+      if (b.x - b.r < dodgeBox.x || b.x + b.r > dodgeBox.x + dodgeBox.w) b.vx *= -1;
+      if (b.y - b.r < dodgeBox.y || b.y + b.r > dodgeBox.y + dodgeBox.h) b.vy *= -1;
+    }
+    if (b.type === 'fall' && b.y > dodgeBox.y + dodgeBox.h + 10) {
+      b.y = dodgeBox.y - 10;
+      b.x = dodgeBox.x + 20 + Math.random() * (dodgeBox.w - 40);
+    }
+    // Collision with heart
+    const dx = b.x - heart.x;
+    const dy = b.y - heart.y;
+    if (Math.sqrt(dx * dx + dy * dy) < b.r + 6) {
+      player.hp = Math.max(0, player.hp - 1);
+    }
+  });
+}
+
+// ── Start battle ──
+function startBattle(idx) {
+  const e = enemies[idx];
+  enemy = { ...e, dialog: [...e.dialog], compliments: 0, spareable: false };
+  state = STATE.BATTLE_MENU;
+  battleSel = 0;
+  battleMsg = `* ${enemy.name} blocks the way!`;
+  turnPhase = 0;
+}
+
+// ── Game loop ──
+function update() {
+  switch (state) {
+    case STATE.MENU: {
+      if (justPressed['ArrowUp'] || justPressed['w']) menuSel = (menuSel + 1) % 2;
+      if (justPressed['ArrowDown'] || justPressed['s']) menuSel = (menuSel + 1) % 2;
+      if (justPressed['z'] || justPressed['Enter']) {
+        if (menuSel === 0) { state = STATE.OVERWORLD; }
+      }
+      break;
+    }
+    case STATE.OVERWORLD: {
+      if (keys['ArrowUp'] || keys['w']) ow.y -= ow.speed;
+      if (keys['ArrowDown'] || keys['s']) ow.y += ow.speed;
+      if (keys['ArrowLeft'] || keys['a']) ow.x -= ow.speed;
+      if (keys['ArrowRight'] || keys['d']) ow.x += ow.speed;
+      ow.x = Math.max(16, Math.min(624, ow.x));
+      ow.y = Math.max(16, Math.min(464, ow.y));
+      // Check trigger zones
+      triggerZones.forEach((z, i) => {
+        if (!usedZones.has(i) && ow.x > z.x && ow.x < z.x + z.w && ow.y > z.y && ow.y < z.y + z.h) {
+          usedZones.add(i);
+          startBattle(z.enemyIdx);
+        }
+      });
+      break;
+    }
+    case STATE.BATTLE_MENU: {
+      if (justPressed['ArrowLeft'] || justPressed['a']) battleSel = (battleSel + 3) % 4;
+      if (justPressed['ArrowRight'] || justPressed['d']) battleSel = (battleSel + 1) % 4;
+      if (justPressed['z'] || justPressed['Enter']) {
+        if (battleSel === 0) { // FIGHT
+          const dmg = player.atk + Math.floor(Math.random() * 3);
+          enemy.hp = Math.max(0, enemy.hp - dmg);
+          battleMsg = `* You dealt ${dmg} damage!`;
+          if (enemy.hp <= 0) {
+            battleMsg = `* You killed ${enemy.name}.\n* You earned 10 EXP.`;
+            killCount++;
+            msgTimer = 120;
+            state = STATE.ENEMY_TURN_TEXT;
+            turnPhase = 2; // win
+          } else {
+            msgTimer = 60;
+            state = STATE.ENEMY_TURN_TEXT;
+            turnPhase = 1;
+          }
+        } else if (battleSel === 1) { // ACT
+          state = STATE.BATTLE_ACT;
+          actSel = 0;
+        } else if (battleSel === 2) { // ITEM
+          // Simple heal
+          const heal = 5;
+          player.hp = Math.min(player.maxHp, player.hp + heal);
+          battleMsg = `* You ate a Nice Cream.\n* HP restored ${heal}.`;
+          msgTimer = 60;
+          state = STATE.ENEMY_TURN_TEXT;
+          turnPhase = 1;
+        } else if (battleSel === 3) { // MERCY
+          if (enemy.spareable) {
+            battleMsg = `* You spared ${enemy.name}.`;
+            spareCount++;
+            msgTimer = 120;
+            state = STATE.ENEMY_TURN_TEXT;
+            turnPhase = 2;
+          } else {
+            battleMsg = `* ${enemy.name} doesn't want\n  to be spared yet.`;
+            msgTimer = 60;
+            state = STATE.ENEMY_TURN_TEXT;
+            turnPhase = 1;
+          }
+        }
+      }
+      if (justPressed['x'] || justPressed['Backspace']) {} // can't back out
+      break;
+    }
+    case STATE.BATTLE_ACT: {
+      if (justPressed['ArrowUp'] || justPressed['w']) actSel = (actSel + 1) % 2;
+      if (justPressed['ArrowDown'] || justPressed['s']) actSel = (actSel + 1) % 2;
+      if (justPressed['x'] || justPressed['Backspace']) { state = STATE.BATTLE_MENU; break; }
+      if (justPressed['z'] || justPressed['Enter']) {
+        if (actSel === 0) { // Check
+          battleMsg = `* ${enemy.name} - ATK ${enemy.atk}\n  HP ${enemy.hp}/${enemy.maxHp}`;
+        } else { // Compliment
+          enemy.compliments++;
+          if (enemy.compliments >= 2) {
+            enemy.spareable = true;
+            battleMsg = `* ${enemy.name} is flattered.\n* ${enemy.name} can be SPARED.`;
+          } else {
+            battleMsg = `* You said something nice.\n* ${enemy.name} blushes.`;
+          }
+        }
+        msgTimer = 60;
+        state = STATE.ENEMY_TURN_TEXT;
+        turnPhase = 1;
+      }
+      break;
+    }
+    case STATE.ENEMY_TURN_TEXT: {
+      msgTimer--;
+      if (msgTimer <= 0) {
+        if (turnPhase === 2) {
+          // Battle won
+          if (usedZones.size >= 3) {
+            state = STATE.WIN;
+          } else {
+            state = STATE.OVERWORLD;
+          }
+        } else {
+          // Enemy attack phase
+          heart.x = dodgeBox.x + dodgeBox.w / 2;
+          heart.y = dodgeBox.y + dodgeBox.h / 2;
+          spawnBullets(enemy.name);
+          dodgeTimer = DODGE_DURATION;
+          state = STATE.BATTLE_DODGE;
+        }
+      }
+      break;
+    }
+    case STATE.BATTLE_DODGE: {
+      // Move heart
+      if (keys['ArrowUp'] || keys['w']) heart.y -= heart.speed;
+      if (keys['ArrowDown'] || keys['s']) heart.y += heart.speed;
+      if (keys['ArrowLeft'] || keys['a']) heart.x -= heart.speed;
+      if (keys['ArrowRight'] || keys['d']) heart.x += heart.speed;
+      heart.x = Math.max(dodgeBox.x + 8, Math.min(dodgeBox.x + dodgeBox.w - 8, heart.x));
+      heart.y = Math.max(dodgeBox.y + 8, Math.min(dodgeBox.y + dodgeBox.h - 8, heart.y));
+      updateBullets();
+      dodgeTimer--;
+      if (player.hp <= 0) {
+        state = STATE.GAME_OVER;
+      } else if (dodgeTimer <= 0) {
+        const d = enemy.dialog[Math.floor(Math.random() * enemy.dialog.length)];
+        battleMsg = `* ${d}`;
+        state = STATE.BATTLE_MENU;
+      }
+      break;
+    }
+    case STATE.WIN:
+    case STATE.GAME_OVER: {
+      if (justPressed['z'] || justPressed['Enter']) {
+        // Reset
+        state = STATE.MENU;
+        player.hp = player.maxHp;
+        ow.x = 320; ow.y = 360;
+        usedZones.clear();
+        killCount = 0; spareCount = 0;
+        menuSel = 0;
+      }
+      break;
+    }
+  }
+  justPressed = {};
+}
+
+function draw() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 640, 480);
+
+  switch (state) {
+    case STATE.MENU: {
+      drawText('UNDERTALE', 160, 100, '#fff', 32);
+      drawText('Simple Edition', 190, 150, '#888', 14);
+      const opts = ['Start Game', 'Controls: WASD/Arrows + Z/Enter'];
+      opts.forEach((t, i) => {
+        drawText(t, 180, 250 + i * 40, i === 0 ? '#fff' : '#888', i === 0 ? 16 : 10);
+      });
+      drawHeart(155, 245, 10);
+      drawText('X/Backspace = Back', 180, 380, '#555', 10);
+      break;
+    }
+    case STATE.OVERWORLD: {
+      // Floor
+      ctx.fillStyle = '#1a0a2e';
+      ctx.fillRect(0, 0, 640, 480);
+      // Grid lines for depth
+      ctx.strokeStyle = '#2a1a4e';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 640; i += 40) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 480); ctx.stroke(); }
+      for (let i = 0; i < 480; i += 40) { ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(640, i); ctx.stroke(); }
+      // Trigger zones (show enemies)
+      triggerZones.forEach((z, i) => {
+        if (!usedZones.has(i)) {
+          ctx.fillStyle = '#333';
+          ctx.fillRect(z.x, z.y, z.w, z.h);
+          drawText(enemies[z.enemyIdx].name, z.x, z.y - 5, '#aaa', 8);
+          // Small sprite hint
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(z.x + z.w/2 - 5, z.y + 10, 10, 15);
+        }
+      });
+      // Player
+      drawHeart(ow.x, ow.y, 12);
+      drawText('Walk into enemies to battle!', 130, 460, '#666', 10);
+      break;
+    }
+    case STATE.BATTLE_MENU:
+    case STATE.BATTLE_ACT:
+    case STATE.ENEMY_TURN_TEXT: {
+      // Enemy area
+      if (enemy) drawEnemySprite(enemy, 320, 100);
+      // Dialog box
+      drawBox(30, 180, 580, 120);
+      drawText(battleMsg, 50, 210, '#fff', 14);
+      // Battle buttons
+      const btns = ['FIGHT', 'ACT', 'ITEM', 'MERCY'];
+      const btnColors = ['#ff0', '#ff8800', '#0af', '#0f0'];
+      btns.forEach((b, i) => {
+        const bx = 50 + i * 150;
+        const by = 420;
+        drawBox(bx, by, 120, 40, battleSel === i && state === STATE.BATTLE_MENU ? '#333' : '#000');
+        drawText(b, bx + 10, by + 28, btnColors[i], 14);
+        if (battleSel === i && state === STATE.BATTLE_MENU) drawHeart(bx - 5, by + 14, 8);
+      });
+      // ACT submenu
+      if (state === STATE.BATTLE_ACT) {
+        drawBox(160, 320, 200, 80);
+        const acts = ['Check', 'Compliment'];
+        acts.forEach((a, i) => {
+          drawText(a, 200, 350 + i * 30, '#fff', 12);
+          if (actSel === i) drawHeart(178, 342 + i * 30, 8);
+        });
+      }
+      // HP bar
+      drawHPBar(50, 400, 100, player.hp, player.maxHp, `${player.name}  LV ${player.lv}`);
+      break;
+    }
+    case STATE.BATTLE_DODGE: {
+      // Dodge box
+      drawBox(dodgeBox.x, dodgeBox.y, dodgeBox.w, dodgeBox.h);
+      // Bullets
+      ctx.fillStyle = '#fff';
+      bullets.forEach(b => {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      // Heart
+      drawHeart(heart.x, heart.y - 6, 8);
+      // Timer bar
+      const pct = dodgeTimer / DODGE_DURATION;
+      ctx.fillStyle = '#333';
+      ctx.fillRect(dodgeBox.x, dodgeBox.y + dodgeBox.h + 10, dodgeBox.w, 8);
+      ctx.fillStyle = '#ff0';
+      ctx.fillRect(dodgeBox.x, dodgeBox.y + dodgeBox.h + 10, dodgeBox.w * pct, 8);
+      // HP
+      drawHPBar(50, 400, 100, player.hp, player.maxHp, `${player.name}  LV ${player.lv}`);
+      // Enemy name
+      drawText(`${enemy.name}'s turn!`, 220, 160, '#f88', 12);
+      break;
+    }
+    case STATE.WIN: {
+      drawText('YOU WIN!', 200, 150, '#ff0', 32);
+      drawText(`Killed: ${killCount}  Spared: ${spareCount}`, 140, 230, '#fff', 14);
+      if (spareCount === 3) drawText('* A true pacifist.', 160, 280, '#0f0', 14);
+      else if (killCount === 3) drawText('* ...', 280, 280, '#f00', 14);
+      else drawText('* You did what you had to.', 120, 280, '#aaa', 14);
+      drawText('Press Z to restart', 180, 380, '#888', 12);
+      break;
+    }
+    case STATE.GAME_OVER: {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, 640, 480);
+      drawText('You cannot give up', 130, 180, '#f00', 20);
+      drawText('just yet...', 200, 220, '#f00', 20);
+      drawText(`${player.name}!`, 250, 280, '#fff', 20);
+      drawText('Stay determined.', 160, 340, '#ff0', 16);
+      drawText('Press Z to try again', 160, 420, '#888', 12);
+      break;
+    }
+  }
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
