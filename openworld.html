@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Open World RPG</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: 'Press Start 2P', monospace; overflow: hidden; }
+  canvas { image-rendering: pixelated; touch-action: none; max-width: 100vw; max-height: 70vh; }
+  #touch-controls { display: none; position: fixed; bottom: 8px; left: 0; right: 0; padding: 8px 16px; z-index: 10; }
+  @media (pointer: coarse) { #touch-controls { display: flex; justify-content: space-between; align-items: flex-end; } }
+  .dpad { display: grid; grid-template: 46px 46px 46px / 46px 46px 46px; gap: 3px; }
+  .dpad button, .action-buttons button { background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.3); border-radius: 10px; color: #fff; font-family: 'Press Start 2P', monospace; font-size: 16px; -webkit-user-select: none; user-select: none; touch-action: manipulation; }
+  .dpad button:active, .action-buttons button:active { background: rgba(255,255,255,0.3); }
+  .dpad .up { grid-column: 2; grid-row: 1; } .dpad .left { grid-column: 1; grid-row: 2; } .dpad .right { grid-column: 3; grid-row: 2; } .dpad .down { grid-column: 2; grid-row: 3; }
+  .action-buttons { display: flex; flex-direction: column; gap: 6px; }
+  .action-buttons button { width: 58px; height: 58px; border-radius: 50%; font-size: 14px; }
+  .btn-z { background: rgba(255,80,80,0.25) !important; border-color: #f66 !important; }
+  .btn-x { background: rgba(80,80,255,0.25) !important; border-color: #88f !important; }
+</style>
+</head>
+<body>
+<canvas id="game" width="640" height="480"></canvas>
+<div id="touch-controls">
+  <div class="dpad">
+    <button class="up" data-key="ArrowUp">▲</button>
+    <button class="left" data-key="ArrowLeft">◀</button>
+    <button class="right" data-key="ArrowRight">▶</button>
+    <button class="down" data-key="ArrowDown">▼</button>
+  </div>
+  <div class="action-buttons">
+    <button class="btn-z" data-key="z">Z</button>
+    <button class="btn-x" data-key="x">X</button>
+  </div>
+</div>
+<script>
+const C = document.getElementById('game');
+const ctx = C.getContext('2d');
+const W = 640, H = 480, T = 32; // tile size
+
+// ── Audio ──
+const ac = new (window.AudioContext || window.webkitAudioContext)();
+function resumeAC() { if (ac.state === 'suspended') ac.resume(); }
+document.addEventListener('touchstart', resumeAC, { once: true });
+document.addEventListener('keydown', resumeAC, { once: true });
+function tone(f, d, type='square', v=0.12) {
+  const o = ac.createOscillator(), g = ac.createGain();
+  o.type = type; o.frequency.value = f;
+  g.gain.setValueAtTime(v, ac.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + d);
+  o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+}
+function sfxStep() { tone(200 + Math.random()*50, 0.04, 'triangle', 0.04); }
+function sfxSelect() { tone(600, 0.06); }
+function sfxConfirm() { tone(800, 0.05); setTimeout(()=>tone(1200,0.08),50); }
+function sfxHit() { tone(180, 0.12, 'sawtooth', 0.18); }
+function sfxHurt() { tone(120, 0.2, 'sawtooth', 0.2); }
+function sfxHeal() { [500,700,900].forEach((f,i) => setTimeout(()=>tone(f,0.08),i*70)); }
+function sfxPickup() { tone(900,0.06); setTimeout(()=>tone(1300,0.1),60); }
+function sfxDeath() { [400,300,200,100].forEach((f,i) => setTimeout(()=>tone(f,0.2,'sawtooth',0.18),i*180)); }
+function sfxLevelUp() { [523,659,784,1047,1319].forEach((f,i) => setTimeout(()=>tone(f,0.12,'square',0.1),i*100)); }
+function sfxDoor() { tone(300,0.1,'triangle',0.1); setTimeout(()=>tone(500,0.12,'triangle',0.1),100); }
+
+// Ambient music
+let bgmI = null, bgmN = 0;
+const bgmMel = [262,294,330,349,392,349,330,294,262,247,220,247,262,330,392,440];
+function startBgm(notes) { stopBgm(); bgmN=0; bgmI=setInterval(()=>{tone((notes||bgmMel)[bgmN%(notes||bgmMel).length],0.14,'triangle',0.04);bgmN++;},280); }
+function stopBgm() { if(bgmI){clearInterval(bgmI);bgmI=null;} }
+
+// ── Input ──
+const keys = {}, jp = {};
+document.addEventListener('keydown', e => { jp[e.key] = !keys[e.key]; keys[e.key] = true; e.preventDefault(); });
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+document.querySelectorAll('[data-key]').forEach(b => {
+  const k = b.dataset.key;
+  b.addEventListener('touchstart', e => { e.preventDefault(); jp[k] = !keys[k]; keys[k] = true; });
+  b.addEventListener('touchend', e => { e.preventDefault(); keys[k] = false; });
+  b.addEventListener('touchcancel', () => keys[k] = false);
+});
+function clearJP() { for (const k in jp) delete jp[k]; }
+
+// ── World Generation ──
+// Multiple zones connected by edges
+// 0=grass, 1=tree, 2=water, 3=sand, 4=stone floor, 5=wall, 6=path, 7=bridge, 8=flowers, 9=dark grass
+const ZONES = {
+  overworld: { w: 60, h: 60, bg: '#2d5a1e', music: null },
+  village: { w: 30, h: 30, bg: '#3a6b2a', music: [330,370,415,370,330,294,262,294] },
+  dungeon: { w: 30, h: 40, bg: '#1a1a2e', music: [165,175,185,175,165,155,147,155] },
+  castle: { w: 25, h: 25, bg: '#2a2a3e', music: [220,262,330,262,220,196,175,196] },
+};
+
+const TILE_COLORS = {
+  0: '#3a8c2a', 1: '#1a5c0a', 2: '#2266aa', 3: '#d4b864',
+  4: '#555566', 5: '#333344', 6: '#8b7355', 7: '#6b5535',
+  8: '#3a8c2a', 9: '#2d6b1e',
+};
+
+const maps = {};
+const npcs = {};
+const items = {};
+const portals = {};
+const enemySpawns = {};
+
+function genMap(id) {
+  const z = ZONES[id];
+  const m = Array.from({length: z.h}, () => new Array(z.w).fill(0));
+
+  if (id === 'overworld') {
+    // Trees border + scattered
+    for (let y = 0; y < z.h; y++) for (let x = 0; x < z.w; x++) {
+      if (x===0||y===0||x===z.w-1||y===z.h-1) m[y][x]=1;
+      else if (Math.random()<0.12) m[y][x]=1;
+      else if (Math.random()<0.03) m[y][x]=8;
+      else if (Math.random()<0.02) m[y][x]=9;
+    }
+    // Lake
+    for (let y=20;y<28;y++) for(let x=35;x<45;x++) { if(Math.hypot(x-40,y-24)<6) m[y][x]=2; }
+    // Beach around lake
+    for (let y=18;y<30;y++) for(let x=33;x<47;x++) { const d=Math.hypot(x-40,y-24); if(d>=5.5&&d<7&&m[y][x]===0) m[y][x]=3; }
+    // Path to village
+    for (let x=5;x<25;x++) { m[10][x]=6; m[11][x]=6; }
+    for (let y=10;y<20;y++) { m[y][24]=6; m[y][25]=6; }
+    // Path to dungeon
+    for (let y=30;y<55;y++) { m[y][15]=6; m[y][16]=6; }
+    // Clear spawn
+    for (let y=28;y<33;y++) for(let x=8;x<13;x++) m[y][x]=0;
+
+    // Portals
+    portals.overworld = [
+      { x:24, y:19, to:'village', tx:15, ty:28, label:'Village' },
+      { x:15, y:54, to:'dungeon', tx:15, ty:1, label:'Dark Cave' },
+    ];
+    // NPCs
+    npcs.overworld = [
+      { x:12, y:25, name:'Old Man', dialog:['The village is north-east.\nFollow the path.','Beware the dark cave\nto the south...','I used to be an\nadventurer like you.'], idx:0, color:'#ddd' },
+      { x:38, y:18, name:'Fisher', dialog:['The lake has no fish.\nJust sadness.','...and maybe a sword\nat the bottom.'], idx:0, color:'#8bf' },
+    ];
+    // Items
+    items.overworld = [
+      { x:40, y:24, name:'Lake Sword', type:'weapon', atk:5, taken:false },
+      { x:20, y:30, name:'Apple', type:'heal', hp:10, taken:false },
+      { x:50, y:10, name:'Shield', type:'armor', def:3, taken:false },
+    ];
+    enemySpawns.overworld = [
+      { x:30, y:35, name:'Slime', hp:15, atk:4, exp:10, gold:5, color:'#4f4', respawn:300 },
+      { x:45, y:45, name:'Wolf', hp:25, atk:7, exp:20, gold:10, color:'#999', respawn:400 },
+      { x:10, y:45, name:'Slime', hp:15, atk:4, exp:10, gold:5, color:'#4f4', respawn:300 },
+    ];
+  }
+
+  if (id === 'village') {
+    for (let y=0;y<z.h;y++) for(let x=0;x<z.w;x++) {
+      if (x===0||y===0||x===z.w-1||y===z.h-1) m[y][x]=1;
+      else m[y][x]=0;
+    }
+    // Houses (walls)
+    const houses = [[3,3,7,5],[13,3,7,5],[23,5,5,5],[3,18,6,5],[20,18,8,5]];
+    houses.forEach(([hx,hy,hw,hh]) => {
+      for(let y=hy;y<hy+hh;y++) for(let x=hx;x<hx+hw;x++) m[y][x]=5;
+      for(let y=hy+1;y<hy+hh-1;y++) for(let x=hx+1;x<hx+hw-1;x++) m[y][x]=4;
+      m[hy+hh-1][hx+Math.floor(hw/2)]=4; // door
+    });
+    // Paths
+    for(let x=1;x<z.w-1;x++) m[15][x]=6;
+    for(let y=1;y<z.h-1;y++) m[y][15]=6;
+    // Portal back
+    portals.village = [
+      { x:15, y:29, to:'overworld', tx:24, ty:18, label:'Overworld' },
+      { x:24, y:22, to:'castle', tx:12, ty:23, label:'Castle' },
+    ];
+    npcs.village = [
+      { x:5, y:14, name:'Shopkeep', dialog:['Welcome! I sell nothing.\nBudget cuts.','Try the dungeon for loot.'], idx:0, color:'#ff8' },
+      { x:16, y:5, name:'Villager', dialog:['The castle is through\nthe east house.','The king needs help!'], idx:0, color:'#f8f' },
+      { x:8, y:20, name:'Healer', dialog:['Let me heal you!','*heals*'], idx:0, color:'#8f8', healer:true },
+    ];
+    items.village = [
+      { x:25, y:7, name:'Potion', type:'heal', hp:20, taken:false },
+    ];
+    enemySpawns.village = [];
+  }
+
+  if (id === 'dungeon') {
+    for (let y=0;y<z.h;y++) for(let x=0;x<z.w;x++) {
+      m[y][x] = 5; // all walls
+    }
+    // Carve corridors
+    const carve = (x1,y1,x2,y2) => {
+      for(let x=Math.min(x1,x2);x<=Math.max(x1,x2);x++) for(let y=Math.min(y1,y2);y<=Math.max(y1,y2);y++) m[y][x]=4;
+    };
+    // Rooms
+    const rooms = [[2,2,8,6],[15,2,10,6],[2,15,8,8],[15,15,10,8],[5,30,20,8]];
+    rooms.forEach(([rx,ry,rw,rh])=> { for(let y=ry;y<ry+rh;y++) for(let x=rx;x<rx+rw;x++) m[y][x]=4; });
+    // Corridors connecting rooms
+    carve(9,5,15,5); carve(6,7,6,15); carve(9,19,15,19); carve(20,7,20,15); carve(15,22,15,30);
+    // Entrance
+    carve(14,0,16,2);
+
+    portals.dungeon = [
+      { x:15, y:0, to:'overworld', tx:15, ty:53, label:'Exit' },
+    ];
+    npcs.dungeon = [
+      { x:5, y:5, name:'Skeleton', dialog:['I\'ve been down here\nfor centuries.','The boss is in\nthe bottom room.','Good luck... you\'ll\nneed it.'], idx:0, color:'#ccc' },
+    ];
+    items.dungeon = [
+      { x:20, y:5, name:'Dark Blade', type:'weapon', atk:10, taken:false },
+      { x:5, y:18, name:'Health Ring', type:'maxhp', hp:10, taken:false },
+      { x:22, y:20, name:'Mega Potion', type:'heal', hp:40, taken:false },
+    ];
+    enemySpawns.dungeon = [
+      { x:8, y:10, name:'Bat', hp:20, atk:6, exp:15, gold:8, color:'#a6a', respawn:250 },
+      { x:18, y:12, name:'Skeleton', hp:35, atk:10, exp:30, gold:15, color:'#ddd', respawn:350 },
+      { x:12, y:33, name:'BOSS: Dragon', hp:100, atk:15, exp:200, gold:100, color:'#f44', respawn:9999 },
+    ];
+  }
+
+  if (id === 'castle') {
+    for(let y=0;y<z.h;y++) for(let x=0;x<z.w;x++) m[y][x]=5;
+    // Throne room
+    for(let y=2;y<8;y++) for(let x=5;x<20;x++) m[y][x]=4;
+    // Hall
+    for(let y=8;y<23;y++) for(let x=9;x<16;x++) m[y][x]=4;
+    // Side rooms
+    for(let y=10;y<16;y++) for(let x=2;x<9;x++) m[y][x]=4;
+    for(let y=10;y<16;y++) for(let x=16;x<23;x++) m[y][x]=4;
+    // Entrance
+    for(let y=23;y<25;y++) for(let x=11;x<14;x++) m[y][x]=4;
+
+    portals.castle = [
+      { x:12, y:24, to:'village', tx:24, ty:21, label:'Village' },
+    ];
+    npcs.castle = [
+      { x:12, y:3, name:'King', dialog:['Hero! Defeat the dragon\nin the dungeon!','I\'ll reward you with...\nmy gratitude.','Bring me proof and\nI\'ll knight you!'], idx:0, color:'#ff0' },
+      { x:5, y:12, name:'Guard', dialog:['The armory is empty.\nBudget cuts again.'], idx:0, color:'#aaa' },
+      { x:19, y:12, name:'Wizard', dialog:['I sense great power\nin you...','Or maybe that\'s lunch.','Take this wisdom:\ndon\'t die.'], idx:0, color:'#a6f' },
+    ];
+    items.castle = [
+      { x:18, y:14, name:'Royal Armor', type:'armor', def:8, taken:false },
+    ];
+    enemySpawns.castle = [];
+  }
+
+  maps[id] = m;
+}
+
+// Generate all maps
+Object.keys(ZONES).forEach(id => genMap(id));
+
+// ── Player ──
+const P = {
+  x: 10, y: 30, zone: 'overworld',
+  hp: 30, maxHp: 30, atk: 5, def: 0,
+  lv: 1, exp: 0, nextExp: 30, gold: 0,
+  weapon: 'Fists', armor: 'None',
+  inventory: [{name:'Apple',type:'heal',hp:10},{name:'Apple',type:'heal',hp:10}],
+  invMax: 8,
+  facing: 0, // 0=down 1=up 2=left 3=right
+  stepTimer: 0,
+};
+
+// ── Game State ──
+const ST = { PLAY:0, DIALOG:1, BATTLE:2, BATTLE_ATK:3, INVENTORY:4, GAME_OVER:5, PICKUP:6, LEVEL_UP:7 };
+let state = ST.PLAY;
+let dialogLines = [], dialogIdx = 0, dialogName = '';
+let battleEnemy = null, battleSel = 0, battleMsg = '', battleTimer = 0, battlePhase = 0; // 0=menu,1=playerAtk,2=enemyAtk,3=result
+let invSel = 0;
+let pickupMsg = '';
+let camX = 0, camY = 0;
+let enemyTimers = {}; // respawn tracking
+let notification = '', notifyTimer = 0;
+let stepCount = 0;
+let gameTime = 0;
+
+// ── Helpers ──
+function curMap() { return maps[P.zone]; }
+function tileAt(x, y) { const m = curMap(); if (y<0||y>=m.length||x<0||x>=m[0].length) return 1; return m[y][x]; }
+function solid(t) { return t===1||t===2||t===5; }
+function notify(msg, dur=90) { notification=msg; notifyTimer=dur; }
+
+function checkLevelUp() {
+  if (P.exp >= P.nextExp) {
+    P.exp -= P.nextExp;
+    P.lv++;
+    P.maxHp += 5;
+    P.hp = P.maxHp;
+    P.atk += 2;
+    P.nextExp = Math.floor(P.nextExp * 1.5);
+    sfxLevelUp();
+    notify(`LEVEL UP! LV ${P.lv}`, 120);
+  }
+}
+
+// ── Update ──
+function update() {
+  gameTime++;
+  if (notifyTimer > 0) notifyTimer--;
+
+  switch (state) {
+    case ST.PLAY: {
+      let dx=0, dy=0;
+      if (keys['ArrowUp']||keys['w']) { dy=-1; P.facing=1; }
+      else if (keys['ArrowDown']||keys['s']) { dy=1; P.facing=0; }
+      else if (keys['ArrowLeft']||keys['a']) { dx=-1; P.facing=2; }
+      else if (keys['ArrowRight']||keys['d']) { dx=1; P.facing=3; }
+
+      if ((dx||dy) && P.stepTimer <= 0) {
+        const nx = P.x+dx, ny = P.y+dy;
+        if (!solid(tileAt(nx,ny))) {
+          P.x=nx; P.y=ny;
+          P.stepTimer = 6;
+          stepCount++;
+          if (stepCount%4===0) sfxStep();
+
+          // Check portals
+          const ps = portals[P.zone]||[];
+          ps.forEach(p => { if(P.x===p.x&&P.y===p.y) { P.zone=p.to; P.x=p.tx; P.y=p.ty; sfxDoor(); const z=ZONES[p.to]; if(z.music)startBgm(z.music);else stopBgm(); notify(p.label); }});
+
+          // Check items
+          const itms = items[P.zone]||[];
+          itms.forEach(it => {
+            if (!it.taken && P.x===it.x && P.y===it.y) {
+              if (it.type==='heal' && P.inventory.length < P.invMax) {
+                it.taken=true; P.inventory.push({name:it.name,type:'heal',hp:it.hp}); sfxPickup();
+                pickupMsg=`Found ${it.name}!`; state=ST.PICKUP;
+              } else if (it.type==='weapon') {
+                it.taken=true; P.weapon=it.name; P.atk+=it.atk; sfxPickup();
+                pickupMsg=`Got ${it.name}! ATK +${it.atk}`; state=ST.PICKUP;
+              } else if (it.type==='armor') {
+                it.taken=true; P.armor=it.name; P.def+=it.def; sfxPickup();
+                pickupMsg=`Got ${it.name}! DEF +${it.def}`; state=ST.PICKUP;
+              } else if (it.type==='maxhp') {
+                it.taken=true; P.maxHp+=it.hp; P.hp=P.maxHp; sfxPickup();
+                pickupMsg=`Got ${it.name}! Max HP +${it.hp}`; state=ST.PICKUP;
+              }
+            }
+          });
+
+          // Check enemy encounters
+          const es = enemySpawns[P.zone]||[];
+          es.forEach((e,i) => {
+            const ek = P.zone+'_'+i;
+            if (enemyTimers[ek]>0) return;
+            if (Math.abs(P.x-e.x)<=1 && Math.abs(P.y-e.y)<=1) {
+              battleEnemy = {...e, idx:i, maxHp:e.hp};
+              battleSel=0; battlePhase=0; battleMsg=`A wild ${e.name} appears!`; battleTimer=60;
+              state=ST.BATTLE; stopBgm();
+              sfxConfirm();
+            }
+          });
+        }
+      }
+      if (P.stepTimer>0) P.stepTimer--;
+
+      // Z to interact with NPC
+      if (jp['z']||jp['Enter']) {
+        const ns = npcs[P.zone]||[];
+        const fx=[0,0,-1,1], fy=[1,-1,0,0];
+        const lx=P.x+fx[P.facing], ly=P.y+fy[P.facing];
+        ns.forEach(n => {
+          if (n.x===lx && n.y===ly || (n.x===P.x && n.y===P.y)) {
+            if (n.healer) {
+              P.hp = P.maxHp;
+              sfxHeal();
+              notify('HP fully restored!');
+            } else {
+              dialogName=n.name; dialogLines=n.dialog; dialogIdx=0;
+              state=ST.DIALOG; sfxConfirm();
+            }
+          }
+        });
+      }
+      // X to open inventory
+      if (jp['x']||jp['Backspace']) {
+        state=ST.INVENTORY; invSel=0; sfxSelect();
+      }
+
+      // Update enemy respawn timers
+      for (const k in enemyTimers) { if(enemyTimers[k]>0) enemyTimers[k]--; }
+      break;
+    }
+
+    case ST.DIALOG: {
+      if (jp['z']||jp['Enter']) {
+        dialogIdx++;
+        if (dialogIdx >= dialogLines.length) { state=ST.PLAY; } else sfxSelect();
+      }
+      break;
+    }
+
+    case ST.PICKUP: {
+      if (jp['z']||jp['Enter']) { state=ST.PLAY; sfxConfirm(); }
+      break;
+    }
+
+    case ST.LEVEL_UP: {
+      if (jp['z']||jp['Enter']) { state=ST.PLAY; sfxConfirm(); }
+      break;
+    }
+
+    case ST.INVENTORY: {
+      if (jp['ArrowUp']||jp['w']) { invSel=Math.max(0,invSel-1); sfxSelect(); }
+      if (jp['ArrowDown']||jp['s']) { invSel=Math.min(P.inventory.length,invSel+1); sfxSelect(); }
+      if (jp['x']||jp['Backspace']) { state=ST.PLAY; sfxSelect(); }
+      if (jp['z']||jp['Enter']) {
+        if (invSel < P.inventory.length) {
+          const it = P.inventory[invSel];
+          if (it.type==='heal') {
+            P.hp = Math.min(P.maxHp, P.hp + it.hp);
+            P.inventory.splice(invSel,1);
+            sfxHeal(); notify(`Used ${it.name}! +${it.hp} HP`);
+            if (invSel>=P.inventory.length) invSel=Math.max(0,P.inventory.length-1);
+          }
+        } else {
+          state=ST.PLAY; sfxSelect(); // "Close" option
+        }
+      }
+      break;
+    }
+
+    case ST.BATTLE: {
+      if (battleTimer>0) { battleTimer--; break; }
+      if (battlePhase===0) { // menu
+        if (jp['ArrowLeft']||jp['a']) { battleSel=(battleSel+2)%3; sfxSelect(); }
+        if (jp['ArrowRight']||jp['d']) { battleSel=(battleSel+1)%3; sfxSelect(); }
+        if (jp['z']||jp['Enter']) {
+          if (battleSel===0) { // Attack
+            const dmg = Math.max(1, P.atk + Math.floor(Math.random()*4) - Math.floor(battleEnemy.atk*0.2));
+            battleEnemy.hp = Math.max(0, battleEnemy.hp - dmg);
+            battleMsg = `You deal ${dmg} damage!`;
+            sfxHit(); battlePhase=1; battleTimer=40;
+          } else if (battleSel===1) { // Item
+            if (P.inventory.length>0) { state=ST.BATTLE_ATK; invSel=0; sfxSelect(); }
+            else { battleMsg='No items!'; battleTimer=30; }
+          } else { // Run
+            if (battleEnemy.name.startsWith('BOSS')) {
+              battleMsg = "Can't run from a boss!"; battleTimer=40;
+            } else {
+              if (Math.random()<0.6) {
+                battleMsg='Got away safely!'; battleTimer=40; battlePhase=3;
+              } else {
+                battleMsg='Couldn\'t escape!'; battleTimer=30; battlePhase=2;
+              }
+            }
+          }
+        }
+      } else if (battlePhase===1) { // after player atk
+        if (battleEnemy.hp<=0) {
+          battleMsg=`Defeated ${battleEnemy.name}!\n+${battleEnemy.exp} EXP  +${battleEnemy.gold} Gold`;
+          P.exp+=battleEnemy.exp; P.gold+=battleEnemy.gold;
+          const ek = P.zone+'_'+battleEnemy.idx;
+          enemyTimers[ek]=battleEnemy.respawn;
+          battlePhase=3; battleTimer=60;
+          sfxPickup();
+          checkLevelUp();
+        } else {
+          battlePhase=2; battleTimer=20;
+        }
+      } else if (battlePhase===2) { // enemy attacks
+        const dmg = Math.max(1, battleEnemy.atk + Math.floor(Math.random()*3) - P.def);
+        P.hp -= dmg;
+        battleMsg = `${battleEnemy.name} deals ${dmg}!`;
+        sfxHurt(); battleTimer=40;
+        if (P.hp<=0) {
+          P.hp=0; battlePhase=4; // death
+        } else {
+          battlePhase=0;
+        }
+      } else if (battlePhase===3) { // battle end
+        state=ST.PLAY;
+        const z=ZONES[P.zone]; if(z.music)startBgm(z.music);
+      } else if (battlePhase===4) {
+        sfxDeath(); state=ST.GAME_OVER;
+      }
+      break;
+    }
+
+    case ST.BATTLE_ATK: { // item select in battle
+      if (jp['ArrowUp']||jp['w']) { invSel=Math.max(0,invSel-1); sfxSelect(); }
+      if (jp['ArrowDown']||jp['s']) { invSel=Math.min(P.inventory.length-1,invSel+1); sfxSelect(); }
+      if (jp['x']||jp['Backspace']) { state=ST.BATTLE; sfxSelect(); }
+      if (jp['z']||jp['Enter']) {
+        const it = P.inventory[invSel];
+        if (it&&it.type==='heal') {
+          P.hp=Math.min(P.maxHp,P.hp+it.hp);
+          P.inventory.splice(invSel,1);
+          battleMsg=`Used ${it.name}! +${it.hp} HP`;
+          sfxHeal(); state=ST.BATTLE; battlePhase=2; battleTimer=40;
+        }
+      }
+      break;
+    }
+
+    case ST.GAME_OVER: {
+      if (jp['z']||jp['Enter']) {
+        // Respawn
+        P.hp=P.maxHp; P.x=10; P.y=30; P.zone='overworld';
+        P.gold=Math.floor(P.gold/2);
+        state=ST.PLAY; stopBgm();
+        notify('You lost half your gold...',120);
+      }
+      break;
+    }
+  }
+
+  // Camera
+  camX = P.x * T - W/2 + T/2;
+  camY = P.y * T - H/2 + T/2;
+  const m = curMap();
+  camX = Math.max(0, Math.min(m[0].length*T - W, camX));
+  camY = Math.max(0, Math.min(m.length*T - H, camY));
+
+  clearJP();
+}
+
+// ── Draw ──
+function drawTile(t, sx, sy) {
+  ctx.fillStyle = TILE_COLORS[t]||'#000';
+  ctx.fillRect(sx, sy, T, T);
+  if (t===1) { // tree
+    ctx.fillStyle='#0a3a00'; ctx.fillRect(sx+4,sy+2,24,18);
+    ctx.fillStyle='#4a2800'; ctx.fillRect(sx+12,sy+18,8,14);
+  }
+  if (t===2) { // water shimmer
+    ctx.fillStyle='rgba(255,255,255,0.08)';
+    if ((gameTime/20|0)%2===((sx/T|0)+(sy/T|0))%2) ctx.fillRect(sx+4,sy+12,12,3);
+  }
+  if (t===8) { // flowers
+    const colors=['#f44','#ff4','#f4f','#4ff'];
+    ctx.fillStyle=colors[((sx+sy)/T|0)%4]; ctx.fillRect(sx+8,sy+8,4,4); ctx.fillRect(sx+18,sy+14,4,4);
+  }
+}
+
+function drawChar(x, y, color, facing, isPlayer) {
+  const sx = x*T - camX, sy = y*T - camY;
+  if (sx<-T||sx>W||sy<-T||sy>H) return;
+  // Body
+  ctx.fillStyle = color;
+  ctx.fillRect(sx+8, sy+4, 16, 20);
+  // Head
+  ctx.fillStyle = isPlayer ? '#fca' : color;
+  ctx.fillRect(sx+10, sy, 12, 12);
+  // Eyes
+  ctx.fillStyle='#000';
+  const ex = facing===2?-2:facing===3?2:0;
+  ctx.fillRect(sx+12+ex, sy+4, 3, 3);
+  ctx.fillRect(sx+17+ex, sy+4, 3, 3);
+  // Legs
+  ctx.fillStyle = isPlayer ? '#44a' : '#555';
+  ctx.fillRect(sx+10, sy+24, 5, 6);
+  ctx.fillRect(sx+17, sy+24, 5, 6);
+}
+
+function drawBox(x,y,w,h,bg='rgba(0,0,20,0.92)') {
+  ctx.fillStyle=bg; ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
+}
+
+function txt(text,x,y,color='#fff',size=12) {
+  ctx.fillStyle=color; ctx.font=`${size}px 'Press Start 2P',monospace`;
+  text.split('\n').forEach((l,i)=>ctx.fillText(l,x,y+i*(size+4)));
+}
+
+function drawHPBar(x,y,w,hp,max) {
+  ctx.fillStyle='#400'; ctx.fillRect(x,y,w,10);
+  ctx.fillStyle=hp>max*0.3?'#0c0':'#f00'; ctx.fillRect(x,y,w*(hp/max),10);
+  ctx.strokeStyle='#fff'; ctx.lineWidth=1; ctx.strokeRect(x,y,w,10);
+}
+
+function draw() {
+  const z = ZONES[P.zone];
+  ctx.fillStyle=z.bg; ctx.fillRect(0,0,W,H);
+
+  const m = curMap();
+  const sx0=Math.floor(camX/T), sy0=Math.floor(camY/T);
+  const sx1=Math.min(m[0].length-1, sx0+Math.ceil(W/T)+1);
+  const sy1=Math.min(m.length-1, sy0+Math.ceil(H/T)+1);
+
+  for(let y=sy0;y<=sy1;y++) for(let x=sx0;x<=sx1;x++) {
+    drawTile(m[y][x], x*T-camX, y*T-camY);
+  }
+
+  // Items
+  (items[P.zone]||[]).forEach(it => {
+    if (it.taken) return;
+    const sx=it.x*T-camX, sy=it.y*T-camY;
+    const bob = Math.sin(gameTime/15)*3;
+    ctx.fillStyle='#ff0'; ctx.beginPath(); ctx.arc(sx+16,sy+12+bob,8,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#fa0'; ctx.beginPath(); ctx.arc(sx+16,sy+12+bob,5,0,Math.PI*2); ctx.fill();
+  });
+
+  // Enemy spawns
+  (enemySpawns[P.zone]||[]).forEach((e,i) => {
+    const ek = P.zone+'_'+i;
+    if (enemyTimers[ek]>0) return;
+    drawChar(e.x, e.y, e.color, 0, false);
+    const sx=e.x*T-camX;
+    const sy=e.y*T-camY;
+    txt(e.name.replace('BOSS: ',''), sx-20, sy-6, e.color, 8);
+  });
+
+  // NPCs
+  (npcs[P.zone]||[]).forEach(n => {
+    drawChar(n.x, n.y, n.color, 0, false);
+    const sx=n.x*T-camX;
+    txt(n.name, sx-10, n.y*T-camY-8, n.color, 8);
+  });
+
+  // Portals
+  (portals[P.zone]||[]).forEach(p => {
+    const sx=p.x*T-camX, sy=p.y*T-camY;
+    ctx.fillStyle=`rgba(100,200,255,${0.3+Math.sin(gameTime/10)*0.15})`;
+    ctx.fillRect(sx+4,sy+4,24,24);
+    txt(p.label, sx-15, sy-6, '#8df', 7);
+  });
+
+  // Player
+  drawChar(P.x, P.y, '#c44', P.facing, true);
+
+  // HUD
+  drawBox(0,H-50,W,50);
+  txt(`HP`,8,H-38,'#fff',10);
+  drawHPBar(36,H-42,100,P.hp,P.maxHp);
+  txt(`${P.hp}/${P.maxHp}`,142,H-38,'#fff',8);
+  txt(`LV ${P.lv}  ATK ${P.atk}  DEF ${P.def}  Gold ${P.gold}`,230,H-38,'#ff8',9);
+  txt(`${P.zone.toUpperCase()}`,8,H-18,'#aaa',8);
+  txt(`[Z] Talk  [X] Items`,300,H-18,'#888',8);
+
+  // Dialog
+  if (state===ST.DIALOG) {
+    drawBox(20,H-170,W-40,110);
+    txt(dialogName,40,H-155,'#ff8',12);
+    txt(dialogLines[dialogIdx],40,H-135,'#fff',11);
+    txt('▼ Z',W-80,H-75,'#888',9);
+  }
+
+  // Pickup
+  if (state===ST.PICKUP) {
+    drawBox(120,180,400,60);
+    txt(pickupMsg,140,210,'#ff0',13);
+  }
+
+  // Inventory
+  if (state===ST.INVENTORY||state===ST.BATTLE_ATK) {
+    drawBox(140,40,360,380);
+    txt('INVENTORY',200,65,'#ff8',14);
+    P.inventory.forEach((it,i) => {
+      const sel = i===invSel;
+      txt(`${sel?'> ':'  '}${it.name} (${it.type==='heal'?'+'+it.hp+'HP':it.type})`,160,95+i*24,sel?'#ff0':'#fff',10);
+    });
+    const ci=P.inventory.length;
+    txt(`${ci===invSel?'> ':'  '}Close`,160,95+ci*24,ci===invSel?'#f88':'#aaa',10);
+    txt(`${P.inventory.length}/${P.invMax}`,400,65,'#aaa',9);
+  }
+
+  // Battle
+  if (state===ST.BATTLE||state===ST.BATTLE_ATK) {
+    if (state!==ST.BATTLE_ATK) {
+      drawBox(0,0,W,H);
+      // Enemy
+      ctx.fillStyle=battleEnemy.color;
+      ctx.beginPath(); ctx.arc(320,120,40+Math.sin(gameTime/8)*3,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#000';
+      ctx.beginPath(); ctx.arc(305,110,6,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(335,110,6,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(320,130,10,0,Math.PI); ctx.fill();
+      txt(battleEnemy.name,240,30,'#fff',14);
+      drawHPBar(220,50,200,battleEnemy.hp,battleEnemy.maxHp);
+      txt(`${battleEnemy.hp}/${battleEnemy.maxHp}`,430,56,'#fff',9);
+      // Message
+      drawBox(40,200,560,80);
+      txt(battleMsg,60,230,'#fff',12);
+      // Menu
+      if (battlePhase===0) {
+        const btns=['FIGHT','ITEM','RUN'];
+        const cols=['#f44','#4f4','#88f'];
+        btns.forEach((b,i) => {
+          const bx=120+i*160;
+          drawBox(bx,340,130,40,battleSel===i?'#333':'#111');
+          txt(b,bx+20,365,cols[i],13);
+          if(battleSel===i) { ctx.fillStyle='#f00'; ctx.beginPath(); ctx.arc(bx+8,360,5,0,Math.PI*2); ctx.fill(); }
+        });
+      }
+      // Player stats
+      drawBox(40,400,560,60);
+      txt(P.name||'Hero',60,425,'#fff',11);
+      drawHPBar(160,418,120,P.hp,P.maxHp);
+      txt(`${P.hp}/${P.maxHp}`,290,425,'#fff',9);
+      txt(`LV ${P.lv}`,400,425,'#ff8',10);
+    }
+  }
+
+  // Game over
+  if (state===ST.GAME_OVER) {
+    ctx.fillStyle='rgba(0,0,0,0.85)'; ctx.fillRect(0,0,W,H);
+    txt('YOU DIED',210,160,'#f00',28);
+    txt('Lost half your gold.',190,230,'#f88',12);
+    txt('Press Z to respawn',190,300,'#888',12);
+  }
+
+  // Notification
+  if (notifyTimer>0) {
+    const a = Math.min(1, notifyTimer/15);
+    ctx.fillStyle=`rgba(0,0,0,${a*0.7})`;
+    ctx.fillRect(W/2-150,10,300,30);
+    ctx.fillStyle=`rgba(255,255,100,${a})`;
+    ctx.font="11px 'Press Start 2P',monospace";
+    ctx.fillText(notification,W/2-140,30);
+  }
+}
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+startBgm();
+loop();
+</script>
+</body>
+</html>
