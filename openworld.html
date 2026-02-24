@@ -82,19 +82,18 @@ document.querySelectorAll('[data-key]').forEach(b => {
 function clearJP() { for (const k in jp) delete jp[k]; }
 
 // ── World Generation ──
-// Multiple zones connected by edges
-// 0=grass, 1=tree, 2=water, 3=sand, 4=stone floor, 5=wall, 6=path, 7=bridge, 8=flowers, 9=dark grass
+// Tiles: 0=floor, 1=wall, 2=water, 3=save point, 4=pillar, 5=dark wall, 6=path, 7=bridge, 8=flowers, 9=ice, 10=lava, 11=crystal, 12=tall grass
 const ZONES = {
-  overworld: { w: 60, h: 60, bg: '#2d5a1e', music: null },
-  village: { w: 30, h: 30, bg: '#3a6b2a', music: [330,370,415,370,330,294,262,294] },
-  dungeon: { w: 30, h: 40, bg: '#1a1a2e', music: [165,175,185,175,165,155,147,155] },
-  castle: { w: 25, h: 25, bg: '#2a2a3e', music: [220,262,330,262,220,196,175,196] },
+  ruins:    { w:80, h:50, bg:'#2a0845', music:[262,294,330,294,262,247,220,247,262,330,349,330] },
+  snowdin:  { w:90, h:35, bg:'#1a1a3a', music:[330,392,440,392,330,294,262,294,330,349,392,440] },
+  waterfall:{ w:70, h:55, bg:'#0a1a3a', music:[220,262,294,330,294,262,220,196,175,196,220,262] },
+  hotland:  { w:60, h:50, bg:'#2a0a0a', music:[440,494,523,494,440,392,349,392,440,523,587,523] },
 };
 
 const TILE_COLORS = {
-  0: '#3a8c2a', 1: '#1a5c0a', 2: '#2266aa', 3: '#d4b864',
-  4: '#555566', 5: '#333344', 6: '#8b7355', 7: '#6b5535',
-  8: '#3a8c2a', 9: '#2d6b1e',
+  0:'#555', 1:'#222', 2:'#1a4a8a', 3:'#ff0', 4:'#444',
+  5:'#1a1a2e', 6:'#6a5a4a', 7:'#5a4a3a', 8:'#555',
+  9:'#8ab4e8', 10:'#c44', 11:'#48c', 12:'#3a6a3a',
 };
 
 const maps = {};
@@ -105,142 +104,251 @@ const enemySpawns = {};
 
 function genMap(id) {
   const z = ZONES[id];
-  const m = Array.from({length: z.h}, () => new Array(z.w).fill(0));
+  const m = Array.from({length: z.h}, () => new Array(z.w).fill(1)); // all walls
 
-  if (id === 'overworld') {
-    // Trees border + scattered
-    for (let y = 0; y < z.h; y++) for (let x = 0; x < z.w; x++) {
-      if (x===0||y===0||x===z.w-1||y===z.h-1) m[y][x]=1;
-      else if (Math.random()<0.12) m[y][x]=1;
-      else if (Math.random()<0.03) m[y][x]=8;
-      else if (Math.random()<0.02) m[y][x]=9;
-    }
-    // Lake
-    for (let y=20;y<28;y++) for(let x=35;x<45;x++) { if(Math.hypot(x-40,y-24)<6) m[y][x]=2; }
-    // Beach around lake
-    for (let y=18;y<30;y++) for(let x=33;x<47;x++) { const d=Math.hypot(x-40,y-24); if(d>=5.5&&d<7&&m[y][x]===0) m[y][x]=3; }
-    // Path to village
-    for (let x=5;x<25;x++) { m[10][x]=6; m[11][x]=6; }
-    for (let y=10;y<20;y++) { m[y][24]=6; m[y][25]=6; }
-    // Path to dungeon
-    for (let y=30;y<55;y++) { m[y][15]=6; m[y][16]=6; }
-    // Clear spawn
-    for (let y=28;y<33;y++) for(let x=8;x<13;x++) m[y][x]=0;
+  // Helper: carve a room
+  const room = (x,y,w,h,tile=0) => { for(let dy=0;dy<h;dy++) for(let dx=0;dx<w;dx++) if(y+dy<z.h&&x+dx<z.w) m[y+dy][x+dx]=tile; };
+  // Helper: carve a corridor
+  const corH = (x1,x2,y,w=2) => { for(let x=Math.min(x1,x2);x<=Math.max(x1,x2);x++) for(let dy=0;dy<w;dy++) if(y+dy<z.h) m[y+dy][x]=0; };
+  const corV = (y1,y2,x,w=2) => { for(let y=Math.min(y1,y2);y<=Math.max(y1,y2);y++) for(let dx=0;dx<w;dx++) if(x+dx<z.w) m[y][x+dx]=0; };
+  // Helper: add pillars in a room
+  const pillars = (rx,ry,rw,rh,spacing=4) => {
+    for(let x=rx+2;x<rx+rw-1;x+=spacing) for(let y=ry+2;y<ry+rh-1;y+=spacing) m[y][x]=4;
+  };
 
-    // Portals
-    portals.overworld = [
-      { x:24, y:19, to:'village', tx:15, ty:28, label:'Village' },
-      { x:15, y:54, to:'dungeon', tx:15, ty:1, label:'Dark Cave' },
+  if (id === 'ruins') {
+    // === THE RUINS (purple, pillared rooms, long corridors) ===
+    // Starting room (flower bed)
+    room(35,2,10,8); m[5][40]=8; m[6][40]=8; m[5][39]=8; m[5][41]=8; // flower patch
+    // Long corridor south
+    corV(9,18,39,2);
+    // Puzzle room 1 (wide with pillars)
+    room(30,18,20,10); pillars(30,18,20,10,5);
+    // Corridor west
+    corH(15,30,22,2);
+    // Room with leaves
+    room(5,18,12,10);
+    for(let i=0;i<8;i++) m[22+Math.floor(Math.random()*4)][7+Math.floor(Math.random()*8)]=8;
+    // Long corridor south from puzzle room
+    corV(27,38,39,2);
+    // Large pillar hall
+    room(25,34,25,12); pillars(25,34,25,12,4);
+    // Small rooms branching east
+    corH(49,58,38,2);
+    room(55,34,10,10);
+    // Save point
+    m[37][57]=3;
+    // Corridor south to exit
+    corV(45,49,38,3);
+    // Spider room (west branch)
+    corH(8,25,38,2);
+    room(2,34,10,10);
+    // Toriel's home
+    room(60,4,16,14);
+    room(63,7,10,8,0); // interior
+    corH(49,60,10,2); // corridor to home
+    m[8][68]=3; // save point at home
+
+    portals.ruins = [
+      { x:39, y:49, to:'snowdin', tx:3, ty:17, label:'Snowdin' },
+      { x:68, y:17, to:'snowdin', tx:3, ty:17, label:'Snowdin (shortcut)' },
     ];
-    // NPCs
-    npcs.overworld = [
-      { x:12, y:25, name:'Old Man', dialog:['The village is north-east.\nFollow the path.','Beware the dark cave\nto the south...','I used to be an\nadventurer like you.'], idx:0, color:'#ddd' },
-      { x:38, y:18, name:'Fisher', dialog:['The lake has no fish.\nJust sadness.','...and maybe a sword\nat the bottom.'], idx:0, color:'#8bf' },
+    npcs.ruins = [
+      { x:40, y:4, name:'Flowey', dialog:['Howdy! I\'m FLOWEY.\nFLOWEY the FLOWER!','In this world...\nit\'s KILL or BE KILLED!','...that\'s just a\njoke! Hee hee.'], idx:0, color:'#ff0' },
+      { x:65, y:9, name:'Toriel', dialog:['Welcome, my child.\nThis is your new home.','I have made a\nbutterscotch pie.','Be careful in the\nrooms ahead.'], idx:0, color:'#fff', healer:true },
+      { x:7, y:22, name:'Froggit', dialog:['Ribbit ribbit.\n(Life is hard.)','Ribbit.\n(But you seem nice.)'], idx:0, color:'#4a4' },
     ];
-    // Items
-    items.overworld = [
-      { x:40, y:24, name:'Lake Sword', type:'weapon', atk:5, taken:false },
-      { x:20, y:30, name:'Apple', type:'heal', hp:10, taken:false },
-      { x:50, y:10, name:'Shield', type:'armor', def:3, taken:false },
+    items.ruins = [
+      { x:35, y:20, name:'Toy Knife', type:'weapon', atk:3, taken:false },
+      { x:8, y:36, name:'Spider Cider', type:'heal', hp:24, taken:false },
+      { x:57, y:37, name:'Faded Ribbon', type:'armor', def:3, taken:false },
+      { x:40, y:5, name:'Monster Candy', type:'heal', hp:10, taken:false },
     ];
-    enemySpawns.overworld = [
-      { x:30, y:35, name:'Slime', hp:15, atk:4, exp:10, gold:5, color:'#4f4', respawn:300 },
-      { x:45, y:45, name:'Wolf', hp:25, atk:7, exp:20, gold:10, color:'#999', respawn:400 },
-      { x:10, y:45, name:'Slime', hp:15, atk:4, exp:10, gold:5, color:'#4f4', respawn:300 },
+    enemySpawns.ruins = [
+      { x:35, y:24, name:'Froggit', hp:15, atk:4, exp:10, gold:5, color:'#4a4', respawn:200 },
+      { x:12, y:22, name:'Whimsun', hp:10, atk:3, exp:8, gold:4, color:'#dbd', respawn:180 },
+      { x:42, y:40, name:'Moldsmal', hp:20, atk:5, exp:12, gold:6, color:'#8a8', respawn:220 },
+      { x:56, y:38, name:'Loox', hp:25, atk:6, exp:15, gold:8, color:'#c84', respawn:250 },
+      { x:6, y:38, name:'Vegetoid', hp:18, atk:5, exp:10, gold:7, color:'#6a4', respawn:200 },
     ];
   }
 
-  if (id === 'village') {
-    for (let y=0;y<z.h;y++) for(let x=0;x<z.w;x++) {
-      if (x===0||y===0||x===z.w-1||y===z.h-1) m[y][x]=1;
-      else m[y][x]=0;
-    }
-    // Houses (walls)
-    const houses = [[3,3,7,5],[13,3,7,5],[23,5,5,5],[3,18,6,5],[20,18,8,5]];
-    houses.forEach(([hx,hy,hw,hh]) => {
-      for(let y=hy;y<hy+hh;y++) for(let x=hx;x<hx+hw;x++) m[y][x]=5;
-      for(let y=hy+1;y<hy+hh-1;y++) for(let x=hx+1;x<hx+hw-1;x++) m[y][x]=4;
-      m[hy+hh-1][hx+Math.floor(hw/2)]=4; // door
-    });
-    // Paths
-    for(let x=1;x<z.w-1;x++) m[15][x]=6;
-    for(let y=1;y<z.h-1;y++) m[y][15]=6;
-    // Portal back
-    portals.village = [
-      { x:15, y:29, to:'overworld', tx:24, ty:18, label:'Overworld' },
-      { x:24, y:22, to:'castle', tx:12, ty:23, label:'Castle' },
-      { x:1, y:15, to:'dungeon', tx:15, ty:1, label:'Dark Cave' },
-    ];
-    npcs.village = [
-      { x:5, y:14, name:'Shopkeep', dialog:['Welcome! I sell nothing.\nBudget cuts.','Try the dungeon for loot.'], idx:0, color:'#ff8' },
-      { x:16, y:5, name:'Villager', dialog:['The castle is through\nthe east house.','The king needs help!'], idx:0, color:'#f8f' },
-      { x:8, y:20, name:'Healer', dialog:['Let me heal you!','*heals*'], idx:0, color:'#8f8', healer:true },
-    ];
-    items.village = [
-      { x:25, y:7, name:'Potion', type:'heal', hp:20, taken:false },
-    ];
-    enemySpawns.village = [];
-  }
+  if (id === 'snowdin') {
+    // === SNOWDIN (horizontal, icy, town at the end) ===
+    // Long horizontal path with branching areas
+    // Main corridor
+    corH(0,89,15,4);
+    // Entry room
+    room(1,10,10,12);
+    // Forest area 1
+    room(14,8,14,14,0);
+    // Scatter some trees (pillars)
+    for(let i=0;i<12;i++) { const tx=15+Math.floor(Math.random()*12), ty=9+Math.floor(Math.random()*12); m[ty][tx]=4; }
+    // Ice puzzle area
+    room(32,8,16,16,9); // ice tiles
+    room(34,10,12,12,9);
+    m[14][35]=0; m[14][36]=0; // gaps in ice
+    m[18][42]=0; m[18][43]=0;
+    // Corridor continues
+    corV(7,15,48,2);
+    room(46,3,10,6);
+    // Papyrus puzzle room
+    room(54,10,16,12);
+    corH(48,54,15,2);
+    // Place some ice
+    for(let y=12;y<20;y+=2) for(let x=56;x<68;x+=3) m[y][x]=9;
+    // Snowdin Town
+    room(72,8,16,20);
+    corH(69,72,16,2);
+    // Buildings in town
+    room(74,10,5,4,1); m[13][76]=0; // shop (enter from bottom)
+    room(81,10,5,4,1); m[13][83]=0; // inn
+    room(74,22,5,4,1); m[22][76]=0; // house
+    m[12][74]=3; // save point
+    // Grillby's
+    room(80,20,6,5,0);
+    m[20][82]=1; m[20][83]=1; // partial wall for bar feel
 
-  if (id === 'dungeon') {
-    for (let y=0;y<z.h;y++) for(let x=0;x<z.w;x++) {
-      m[y][x] = 5; // all walls
-    }
-    // Carve corridors
-    const carve = (x1,y1,x2,y2) => {
-      for(let x=Math.min(x1,x2);x<=Math.max(x1,x2);x++) for(let y=Math.min(y1,y2);y<=Math.max(y1,y2);y++) m[y][x]=4;
-    };
-    // Rooms
-    const rooms = [[2,2,8,6],[15,2,10,6],[2,15,8,8],[15,15,10,8],[5,30,20,8]];
-    rooms.forEach(([rx,ry,rw,rh])=> { for(let y=ry;y<ry+rh;y++) for(let x=rx;x<rx+rw;x++) m[y][x]=4; });
-    // Corridors connecting rooms
-    carve(9,5,15,5); carve(6,7,6,15); carve(9,19,15,19); carve(20,7,20,15); carve(15,22,15,30);
-    // Entrance
-    carve(14,0,16,2);
-
-    portals.dungeon = [
-      { x:15, y:0, to:'overworld', tx:15, ty:53, label:'Exit' },
-      { x:5, y:2, to:'village', tx:2, ty:15, label:'Village' },
+    portals.snowdin = [
+      { x:2, y:16, to:'ruins', tx:39, ty:48, label:'Ruins' },
+      { x:87, y:16, to:'waterfall', tx:2, ty:27, label:'Waterfall' },
     ];
-    npcs.dungeon = [
-      { x:5, y:5, name:'Skeleton', dialog:['I\'ve been down here\nfor centuries.','The boss is in\nthe bottom room.','Good luck... you\'ll\nneed it.'], idx:0, color:'#ccc' },
+    npcs.snowdin = [
+      { x:60, y:15, name:'Papyrus', dialog:['NYEH HEH HEH!\nI am the GREAT\nPAPYRUS!','I will capture\na human! Then I\'ll\njoin the Royal Guard!','SPAGHETTI!!!'], idx:0, color:'#fff' },
+      { x:58, y:17, name:'Sans', dialog:['hey kid.\nwanna hear a joke?','what do you call\na lazy skeleton?\na LAZYBONES.','heh. i crack\nmyself up.'], idx:0, color:'#aaf' },
+      { x:75, y:12, name:'Shopkeep', dialog:['Welcome to Snowdin\nShop! We have...\nnothing. Budget cuts.','But the inn next\ndoor still works!'], idx:0, color:'#ff8' },
+      { x:82, y:12, name:'Innkeeper', dialog:['Stay the night?\n...It\'s free!','*You feel rested.*'], idx:0, color:'#f8a', healer:true },
+      { x:82, y:22, name:'Grillby', dialog:['...............','.......*nods*......','...fire crackles...'], idx:0, color:'#f80' },
     ];
-    items.dungeon = [
-      { x:20, y:5, name:'Dark Blade', type:'weapon', atk:10, taken:false },
-      { x:5, y:18, name:'Health Ring', type:'maxhp', hp:10, taken:false },
-      { x:22, y:20, name:'Mega Potion', type:'heal', hp:40, taken:false },
+    items.snowdin = [
+      { x:20, y:12, name:'Tough Glove', type:'weapon', atk:5, taken:false },
+      { x:40, y:14, name:'Nice Cream', type:'heal', hp:15, taken:false },
+      { x:48, y:5, name:'Manly Bandana', type:'armor', def:5, taken:false },
+      { x:76, y:24, name:'Snowman Piece', type:'heal', hp:45, taken:false },
     ];
-    enemySpawns.dungeon = [
-      { x:8, y:10, name:'Bat', hp:20, atk:6, exp:15, gold:8, color:'#a6a', respawn:250 },
-      { x:18, y:12, name:'Skeleton', hp:35, atk:10, exp:30, gold:15, color:'#ddd', respawn:350 },
-      { x:12, y:33, name:'BOSS: Dragon', hp:100, atk:15, exp:200, gold:100, color:'#f44', respawn:9999 },
+    enemySpawns.snowdin = [
+      { x:18, y:14, name:'Snowdrake', hp:20, atk:5, exp:12, gold:6, color:'#9cf', respawn:200 },
+      { x:38, y:12, name:'Ice Cap', hp:22, atk:6, exp:14, gold:7, color:'#aef', respawn:220 },
+      { x:50, y:14, name:'Gyftrot', hp:30, atk:7, exp:20, gold:10, color:'#864', respawn:300 },
+      { x:66, y:16, name:'Lesser Dog', hp:18, atk:5, exp:10, gold:5, color:'#ee8', respawn:180 },
     ];
   }
 
-  if (id === 'castle') {
-    for(let y=0;y<z.h;y++) for(let x=0;x<z.w;x++) m[y][x]=5;
-    // Throne room
-    for(let y=2;y<8;y++) for(let x=5;x<20;x++) m[y][x]=4;
-    // Hall
-    for(let y=8;y<23;y++) for(let x=9;x<16;x++) m[y][x]=4;
-    // Side rooms
-    for(let y=10;y<16;y++) for(let x=2;x<9;x++) m[y][x]=4;
-    for(let y=10;y<16;y++) for(let x=16;x<23;x++) m[y][x]=4;
-    // Entrance
-    for(let y=23;y<25;y++) for(let x=11;x<14;x++) m[y][x]=4;
+  if (id === 'waterfall') {
+    // === WATERFALL (vertical + winding, blue crystals, water streams) ===
+    // Entry corridor
+    corH(0,12,26,3);
+    // First big room with water
+    room(10,20,18,14);
+    for(let y=24;y<32;y++) for(let x=12;x<16;x++) m[y][x]=2; // water pool
+    m[23][14]=7; m[24][14]=7; // bridge over water
+    // Crystal corridor north
+    corV(8,20,18,3);
+    room(12,2,14,8);
+    for(let x=14;x<24;x+=3) m[4][x]=11; // crystals on wall
+    for(let x=14;x<24;x+=3) m[8][x]=11;
+    // Temmie village (hidden east)
+    corH(27,38,24,2);
+    room(36,20,12,10);
+    // Wishing room (south)
+    corV(33,44,20,2);
+    room(12,40,20,12);
+    for(let i=0;i<15;i++) m[42+Math.floor(Math.random()*8)][14+Math.floor(Math.random()*16)]=11; // crystals everywhere
+    m[45][22]=3; // save point
+    // Undyne chase corridor
+    corH(31,50,46,3);
+    room(46,40,16,12);
+    // Bridge over abyss
+    // Bridge over abyss
+    for(let x=16;x<=22;x++) { m[48][x]=7; m[49][x]=7; }
+    // Boss room
+    room(48,2,18,12);
+    pillars(48,2,18,12,5);
+    corV(8,20,56,2);
+    // Exit south
+    corV(51,54,54,3);
 
-    portals.castle = [
-      { x:12, y:24, to:'village', tx:24, ty:23, label:'Village' },
+    portals.waterfall = [
+      { x:1, y:27, to:'snowdin', tx:86, ty:16, label:'Snowdin' },
+      { x:55, y:54, to:'hotland', tx:30, ty:2, label:'Hotland' },
     ];
-    npcs.castle = [
-      { x:12, y:3, name:'King', dialog:['Hero! Defeat the dragon\nin the dungeon!','I\'ll reward you with...\nmy gratitude.','Bring me proof and\nI\'ll knight you!'], idx:0, color:'#ff0' },
-      { x:5, y:12, name:'Guard', dialog:['The armory is empty.\nBudget cuts again.'], idx:0, color:'#aaa' },
-      { x:19, y:12, name:'Wizard', dialog:['I sense great power\nin you...','Or maybe that\'s lunch.','Take this wisdom:\ndon\'t die.'], idx:0, color:'#a6f' },
+    npcs.waterfall = [
+      { x:16, y:24, name:'Monster Kid', dialog:['Yo! You going to\nsee Undyne?!','She\'s SO cool!','I wanna be just\nlike her when I\ngrow up!'], idx:0, color:'#ff8' },
+      { x:40, y:24, name:'Temmie', dialog:['hOI! im temmie!','temmie love humans!','tem need money\nfor colleg!'], idx:0, color:'#fff' },
+      { x:20, y:44, name:'Gerson', dialog:['Wa ha ha!\nI\'ve been here\nsince forever.','Want some tea?\nToo bad, I\'m\nout of cups.'], idx:0, color:'#8a4' },
+      { x:55, y:7, name:'Undyne', dialog:['NGAAAAH!\nYou think you can\njust walk through?!','I am UNDYNE,\ncaptain of the\nRoyal Guard!','PREPARE YOURSELF!'], idx:0, color:'#48f' },
     ];
-    items.castle = [
-      { x:18, y:14, name:'Royal Armor', type:'armor', def:8, taken:false },
+    items.waterfall = [
+      { x:20, y:6, name:'Ballet Shoes', type:'weapon', atk:8, taken:false },
+      { x:38, y:26, name:'Temmie Flakes', type:'heal', hp:5, taken:false },
+      { x:18, y:48, name:'Astronaut Food', type:'heal', hp:30, taken:false },
+      { x:60, y:8, name:'Tutu', type:'armor', def:8, taken:false },
     ];
-    enemySpawns.castle = [];
+    enemySpawns.waterfall = [
+      { x:14, y:28, name:'Aaron', hp:30, atk:8, exp:20, gold:10, color:'#a6f', respawn:250 },
+      { x:24, y:24, name:'Woshua', hp:25, atk:7, exp:16, gold:8, color:'#6af', respawn:220 },
+      { x:22, y:46, name:'Shyren', hp:28, atk:7, exp:18, gold:9, color:'#aaa', respawn:240 },
+      { x:52, y:46, name:'Temmie', hp:20, atk:6, exp:14, gold:7, color:'#fff', respawn:200 },
+      { x:55, y:7, name:'BOSS: Undyne', hp:120, atk:14, exp:250, gold:120, color:'#48f', respawn:9999 },
+    ];
+  }
+
+  if (id === 'hotland') {
+    // === HOTLAND / CORE (red, lava, mechanical) ===
+    // Entry from top
+    room(26,1,8,8);
+    m[3][30]=3; // save point
+    // Lab
+    room(20,10,20,10); pillars(20,10,20,10,6);
+    corV(8,10,30,2);
+    // Lava sea
+    for(let y=22;y<30;y++) for(let x=0;x<z.w;x++) m[y][x]=10;
+    // Bridges across lava
+    // Bridges across lava
+    for(let x=10;x<=20;x++) { m[25][x]=7; m[26][x]=7; }
+    for(let x=30;x<=45;x++) { m[25][x]=7; m[26][x]=7; }
+    // Platforms in lava
+    room(4,24,8,4); room(22,24,6,4); room(48,24,8,4);
+    // South: The CORE
+    room(20,30,20,6);
+    corV(28,35,28,3);
+    // Core entrance
+    room(15,36,30,10);
+    // Core interior maze
+    corH(16,25,40,2); corH(30,44,40,2);
+    corV(40,44,24,2); corV(40,44,36,2);
+    room(20,42,8,6); room(32,42,8,6);
+    // Final corridor
+    corV(46,49,28,3);
+    room(22,48,18,2); // exit hall
+    // Mettaton stage
+    room(46,36,10,8);
+    m[40][50]=3; // save
+
+    portals.hotland = [
+      { x:30, y:1, to:'waterfall', tx:55, ty:53, label:'Waterfall' },
+      { x:30, y:49, to:'ruins', tx:40, ty:3, label:'New Home (loop)' },
+    ];
+    npcs.hotland = [
+      { x:28, y:14, name:'Alphys', dialog:['O-oh! A human!\nI\'ve been watching\nyou on my cameras!','I-I\'m Dr. Alphys!\nRoyal Scientist!','I can help you\nget through Hotland!'], idx:0, color:'#ff4' },
+      { x:49, y:40, name:'Mettaton', dialog:['OH YES! WELCOME\nTO MY SHOW!','RATINGS! DRAMA!\nACTION!','YOU\'RE GOING TO\nBE A STAR, DARLING!'], idx:0, color:'#f4f' },
+      { x:24, y:44, name:'Burgerpants', dialog:['I hate my job.\nI hate my life.','...Do you want some\nGlamburgers?\n...Of course not.'], idx:0, color:'#da8' },
+      { x:36, y:44, name:'Bratty & Catty', dialog:['Like, OH MY GOD!\nA human!','Do you want to buy\nsome totally legal\nmerchandise?'], idx:0, color:'#f8f' },
+    ];
+    items.hotland = [
+      { x:6, y:25, name:'Burnt Pan', type:'weapon', atk:12, taken:false },
+      { x:50, y:25, name:'Stained Apron', type:'armor', def:10, taken:false },
+      { x:34, y:44, name:'Glamburger', type:'heal', hp:35, taken:false },
+      { x:22, y:44, name:'Starfait', type:'heal', hp:30, taken:false },
+      { x:48, y:38, name:'MTT-Brand Steak', type:'heal', hp:50, taken:false },
+    ];
+    enemySpawns.hotland = [
+      { x:24, y:14, name:'Vulkin', hp:30, atk:8, exp:18, gold:10, color:'#f84', respawn:250 },
+      { x:36, y:14, name:'Tsunderplane', hp:35, atk:9, exp:22, gold:12, color:'#88f', respawn:280 },
+      { x:14, y:25, name:'Pyrope', hp:32, atk:10, exp:20, gold:11, color:'#f60', respawn:260 },
+      { x:40, y:42, name:'Knight Knight', hp:45, atk:12, exp:35, gold:18, color:'#aaa', respawn:350 },
+      { x:50, y:40, name:'BOSS: Mettaton EX', hp:150, atk:16, exp:300, gold:150, color:'#f4f', respawn:9999 },
+    ];
   }
 
   maps[id] = m;
@@ -251,7 +359,7 @@ Object.keys(ZONES).forEach(id => genMap(id));
 
 // ── Player ──
 const P = {
-  x: 10, y: 30, zone: 'overworld',
+  x: 40, y: 4, zone: 'ruins',
   hp: 30, maxHp: 30, atk: 5, def: 0,
   lv: 1, exp: 0, nextExp: 30, gold: 0,
   weapon: 'Fists', armor: 'None',
@@ -277,7 +385,7 @@ let gameTime = 0;
 // ── Helpers ──
 function curMap() { return maps[P.zone]; }
 function tileAt(x, y) { const m = curMap(); if (y<0||y>=m.length||x<0||x>=m[0].length) return 1; return m[y][x]; }
-function solid(t) { return t===1||t===2||t===5; }
+function solid(t) { return t===1||t===2||t===5||t===10; }
 function notify(msg, dur=90) { notification=msg; notifyTimer=dur; }
 
 function checkLevelUp() {
@@ -313,6 +421,13 @@ function update() {
           P.stepTimer = 6;
           stepCount++;
           if (stepCount%4===0) sfxStep();
+
+          // Check save points
+          if (tileAt(P.x, P.y)===3) {
+            P.hp = P.maxHp;
+            sfxHeal();
+            notify('* The save point fills you with determination.', 120);
+          }
 
           // Check portals
           const ps = portals[P.zone]||[];
@@ -517,19 +632,84 @@ function update() {
 
 // ── Draw ──
 function drawTile(t, sx, sy) {
-  ctx.fillStyle = TILE_COLORS[t]||'#000';
+  const zone = P.zone;
+  // Zone-specific floor colors
+  if (t===0) {
+    if (zone==='ruins') ctx.fillStyle='#4a2866';
+    else if (zone==='snowdin') ctx.fillStyle='#e8e8f0';
+    else if (zone==='waterfall') ctx.fillStyle='#2a3a5a';
+    else if (zone==='hotland') ctx.fillStyle='#553333';
+    else ctx.fillStyle='#555';
+  } else {
+    ctx.fillStyle = TILE_COLORS[t]||'#000';
+  }
   ctx.fillRect(sx, sy, T, T);
-  if (t===1) { // tree
-    ctx.fillStyle='#0a3a00'; ctx.fillRect(sx+4,sy+2,24,18);
-    ctx.fillStyle='#4a2800'; ctx.fillRect(sx+12,sy+18,8,14);
+
+  // Wall details
+  if (t===1) {
+    if (zone==='ruins') { ctx.fillStyle='#3a1856'; ctx.fillRect(sx,sy,T,T); ctx.fillStyle='#4a2066'; ctx.fillRect(sx+2,sy+2,T-4,T-4); }
+    else if (zone==='snowdin') { ctx.fillStyle='#445'; ctx.fillRect(sx,sy,T,T); ctx.fillStyle='#e8e8f0'; for(let i=0;i<3;i++){ctx.fillRect(sx+Math.random()*24,sy+Math.random()*24,4,4);} }
+    else if (zone==='waterfall') { ctx.fillStyle='#1a2a4a'; ctx.fillRect(sx,sy,T,T); ctx.fillStyle='#2a3a5a'; ctx.fillRect(sx+4,sy+4,8,8); }
+    else if (zone==='hotland') { ctx.fillStyle='#2a1a1a'; ctx.fillRect(sx,sy,T,T); }
+    else { ctx.fillStyle='#222'; ctx.fillRect(sx,sy,T,T); }
   }
-  if (t===2) { // water shimmer
-    ctx.fillStyle='rgba(255,255,255,0.08)';
-    if ((gameTime/20|0)%2===((sx/T|0)+(sy/T|0))%2) ctx.fillRect(sx+4,sy+12,12,3);
+  // Water with animation
+  if (t===2) {
+    ctx.fillStyle='#1a4a8a'; ctx.fillRect(sx,sy,T,T);
+    ctx.fillStyle=`rgba(100,180,255,${0.15+Math.sin(gameTime/12+(sx+sy)/30)*0.1})`;
+    ctx.fillRect(sx,sy,T,T);
+    ctx.fillStyle='rgba(255,255,255,0.1)';
+    if((gameTime/15|0)%2===(((sx/T|0)+(sy/T|0))%2)) ctx.fillRect(sx+6,sy+10,14,3);
   }
-  if (t===8) { // flowers
-    const colors=['#f44','#ff4','#f4f','#4ff'];
-    ctx.fillStyle=colors[((sx+sy)/T|0)%4]; ctx.fillRect(sx+8,sy+8,4,4); ctx.fillRect(sx+18,sy+14,4,4);
+  // Save point (spinning star)
+  if (t===3) {
+    if(zone==='ruins') ctx.fillStyle='#4a2866'; else if(zone==='snowdin') ctx.fillStyle='#e8e8f0'; else ctx.fillStyle='#555';
+    ctx.fillRect(sx,sy,T,T);
+    ctx.fillStyle=`rgba(255,255,0,${0.6+Math.sin(gameTime/8)*0.4})`;
+    const cx=sx+16,cy=sy+16,r=6+Math.sin(gameTime/10)*2;
+    for(let i=0;i<5;i++){const a=Math.PI*2/5*i-Math.PI/2+gameTime/30;ctx.fillRect(cx+Math.cos(a)*r-2,cy+Math.sin(a)*r-2,4,4);}
+    ctx.beginPath();ctx.arc(cx,cy,4,0,Math.PI*2);ctx.fill();
+  }
+  // Pillar
+  if (t===4) {
+    if(zone==='ruins'){ctx.fillStyle='#5a3876';ctx.fillRect(sx+6,sy,20,T);ctx.fillStyle='#6a4886';ctx.fillRect(sx+8,sy+2,16,T-4);}
+    else if(zone==='snowdin'){ctx.fillStyle='#bbc';ctx.fillRect(sx+8,sy,16,T);} // tree trunk
+    else{ctx.fillStyle='#444';ctx.fillRect(sx+8,sy,16,T);}
+  }
+  // Flowers
+  if (t===8) {
+    if(zone==='ruins') ctx.fillStyle='#4a2866'; else ctx.fillStyle='#555';
+    ctx.fillRect(sx,sy,T,T);
+    ctx.fillStyle='#ff0';ctx.beginPath();ctx.arc(sx+10,sy+12,4,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#fa0';ctx.beginPath();ctx.arc(sx+20,sy+18,3,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#f44';ctx.beginPath();ctx.arc(sx+14,sy+22,3,0,Math.PI*2);ctx.fill();
+  }
+  // Ice
+  if (t===9) {
+    ctx.fillStyle='#8ab4e8';ctx.fillRect(sx,sy,T,T);
+    ctx.fillStyle='rgba(255,255,255,0.2)';ctx.fillRect(sx+2,sy+2,12,6);ctx.fillRect(sx+16,sy+18,10,6);
+  }
+  // Lava
+  if (t===10) {
+    ctx.fillStyle='#c44';ctx.fillRect(sx,sy,T,T);
+    ctx.fillStyle=`rgba(255,100,0,${0.3+Math.sin(gameTime/10+(sx+sy)/20)*0.2})`;ctx.fillRect(sx,sy,T,T);
+    ctx.fillStyle='rgba(255,200,50,0.15)';
+    if((gameTime/18|0)%3===((sx/T|0)+(sy/T|0))%3) ctx.fillRect(sx+4,sy+8,20,6);
+  }
+  // Crystal
+  if (t===11) {
+    if(zone==='waterfall') ctx.fillStyle='#2a3a5a'; else ctx.fillStyle='#555';
+    ctx.fillRect(sx,sy,T,T);
+    ctx.fillStyle=`rgba(80,160,255,${0.5+Math.sin(gameTime/15+sx/10)*0.3})`;
+    ctx.beginPath();ctx.moveTo(sx+16,sy+2);ctx.lineTo(sx+24,sy+20);ctx.lineTo(sx+8,sy+20);ctx.fill();
+    ctx.fillStyle=`rgba(150,220,255,${0.3+Math.sin(gameTime/12+sy/10)*0.2})`;
+    ctx.beginPath();ctx.moveTo(sx+16,sy+6);ctx.lineTo(sx+20,sy+18);ctx.lineTo(sx+12,sy+18);ctx.fill();
+  }
+  // Bridge
+  if (t===7) {
+    ctx.fillStyle='#5a4a3a';ctx.fillRect(sx,sy,T,T);
+    ctx.fillStyle='#4a3a2a';ctx.fillRect(sx,sy,T,3);ctx.fillRect(sx,sy+T-3,T,3);
+    ctx.fillStyle='#6a5a4a';ctx.fillRect(sx+4,sy+4,T-8,T-8);
   }
 }
 
@@ -626,7 +806,7 @@ function draw() {
   txt(`${P.hp}/${P.maxHp}`,142,H-38,'#fff',8);
   txt(`LV ${P.lv}  ATK ${P.atk}  DEF ${P.def}  Gold ${P.gold}`,230,H-38,'#ff8',9);
   txt(`${P.zone.toUpperCase()}`,8,H-18,'#aaa',8);
-  txt(`[Z] Talk  [X] Items`,300,H-18,'#888',8);
+  txt(`[Z] Talk/Save  [X] Items`,260,H-18,'#888',8);
 
   // Dialog
   if (state===ST.DIALOG) {
@@ -712,7 +892,7 @@ function draw() {
 }
 
 function loop() { update(); draw(); requestAnimationFrame(loop); }
-startBgm();
+startBgm(ZONES.ruins.music);
 loop();
 </script>
 </body>
