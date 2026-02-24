@@ -169,6 +169,7 @@ function genMap(id) {
     portals.village = [
       { x:15, y:29, to:'overworld', tx:24, ty:18, label:'Overworld' },
       { x:24, y:22, to:'castle', tx:12, ty:23, label:'Castle' },
+      { x:1, y:15, to:'dungeon', tx:15, ty:1, label:'Dark Cave' },
     ];
     npcs.village = [
       { x:5, y:14, name:'Shopkeep', dialog:['Welcome! I sell nothing.\nBudget cuts.','Try the dungeon for loot.'], idx:0, color:'#ff8' },
@@ -199,6 +200,7 @@ function genMap(id) {
 
     portals.dungeon = [
       { x:15, y:0, to:'overworld', tx:15, ty:53, label:'Exit' },
+      { x:5, y:2, to:'village', tx:2, ty:15, label:'Village' },
     ];
     npcs.dungeon = [
       { x:5, y:5, name:'Skeleton', dialog:['I\'ve been down here\nfor centuries.','The boss is in\nthe bottom room.','Good luck... you\'ll\nneed it.'], idx:0, color:'#ccc' },
