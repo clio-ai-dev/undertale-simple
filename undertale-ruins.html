@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>UNDERTALE - The Ruins</title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; background: #000; }
+body { display: flex; justify-content: center; align-items: center; font-family: 'Press Start 2P', monospace; }
+canvas { image-rendering: pixelated; border: 3px solid #fff; touch-action: none; max-width: 100vw; max-height: 100vh; }
+#touch { display: none; position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); z-index: 10; }
+@media (pointer: coarse) { #touch { display: flex; gap: 20px; } }
+.pad { display: grid; grid-template: 40px 40px 40px / 40px 40px 40px; gap: 4px; }
+button { background: rgba(255,255,255,0.1); border: 2px solid #fff; color: #fff; font-family: 'Press Start 2P'; font-size: 11px; cursor: pointer; }
+button:active { background: rgba(255,255,255,0.3); }
+.pad button { width: 40px; height: 40px; }
+.act button { width: 50px; height: 50px; border-radius: 50%; }
+</style>
+</head>
+<body>
+<canvas id="c" width="640" height="480"></canvas>
+<div id="touch">
+  <div class="pad">
+    <button data-key="Up" style="grid-column:2;grid-row:1;">▲</button>
+    <button data-key="Left" style="grid-column:1;grid-row:2;">◀</button>
+    <button data-key="Right" style="grid-column:3;grid-row:2;">▶</button>
+    <button data-key="Down" style="grid-column:2;grid-row:3;">▼</button>
+  </div>
+  <div class="act">
+    <button data-key="z" style="background:rgba(255,100,100,0.25);border-color:#f88;">Z</button>
+    <button data-key="x" style="background:rgba(100,100,255,0.25);border-color:#88f;">X</button>
+  </div>
+</div>
+
+<script>
+const cvs = document.getElementById('c'), ctx = cvs.getContext('2d');
+const W = 640, H = 480;
+
+// ── AUDIO ──
+const ac = new (window.AudioContext || window.webkitAudioContext)();
+function resumeAC() { if (ac.state === 'suspended') ac.resume(); }
+document.addEventListener('touchstart', resumeAC, { once: true });
+document.addEventListener('keydown', resumeAC, { once: true });
+function tone(f, d, type='square', v=0.08) {
+  try { const o = ac.createOscillator(), g = ac.createGain(); o.type = type; o.frequency.value = f; g.gain.setValueAtTime(v, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + d); o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + d); } catch (e) {}
+}
+function sfx(type) {
+  const s = { select: () => tone(600, 0.05), confirm: () => { tone(800, 0.05); setTimeout(() => tone(1200, 0.08), 50); }, text: () => tone(350 + Math.random()*100, 0.02), hit: () => tone(180, 0.1, 'sawtooth'), hurt: () => tone(100, 0.15, 'sawtooth'), defeat: () => { for (let i = 0; i < 4; i++) setTimeout(() => tone(400 - i*80, 0.2, 'sawtooth'), i*150); } };
+  s[type]?.();
+}
+
+// ── INPUT ──
+const keys = {}, jp = {};
+const kmap = { 'ArrowUp': 'Up', 'ArrowDown': 'Down', 'ArrowLeft': 'Left', 'ArrowRight': 'Right', ' ': 'z', 'Enter': 'z' };
+document.addEventListener('keydown', e => {
+  const k = kmap[e.key] || e.key.toLowerCase();
+  if (!keys[k]) { jp[k] = true; sfx('select'); }
+  keys[k] = true;
+});
+document.addEventListener('keyup', e => { keys[kmap[e.key] || e.key.toLowerCase()] = false; });
+document.querySelectorAll('[data-key]').forEach(b => {
+  const k = b.dataset.key;
+  b.addEventListener('touchstart', e => { e.preventDefault(); if (!keys[k]) { jp[k] = true; sfx('select'); } keys[k] = true; });
+  b.addEventListener('touchend', e => { e.preventDefault(); keys[k] = false; });
+  b.addEventListener('touchcancel', () => { keys[k] = false; });
+});
+
+// ── STATE ──
+const STATE = { INTRO: 0, DIALOG: 1, OVERWORLD: 2, BATTLE: 3, DODGE: 4, FIGHT: 5, END: 6, OVER: 7 };
+let state = STATE.INTRO;
+let frame = 0, dialogIdx = 0, dialogText = '';
+let curRoom = 0;
+let player = { hp: 20, maxHp: 20, atk: 5, lv: 1, name: 'CHARA' };
+let battle = { enemy: null, hp: 0, maxHp: 0, text: '', sel: 0, acted: false, spareCount: 0, dFrame: 0 };
+let bullets = [], heart = { x: W/2, y: H-120, speed: 4 };
+
+// ── ENEMY DATA ──
+const enemies = {
+  froggit: { name: 'Froggit', hp: 15, atk: 4, exp: 10, color: '#4a4', acts: ['Check', 'Compliment', 'Threaten'] },
+  whimsun: { name: 'Whimsun', hp: 10, atk: 2, exp: 8, color: '#dbd', acts: ['Check', 'Console', 'Compliment'] },
+  loox: { name: 'Loox', hp: 20, atk: 5, exp: 15, color: '#c84', acts: ['Check', "Don't Pick On", 'Pick On'] },
+  vegetoid: { name: 'Vegetoid', hp: 18, atk: 4, exp: 12, color: '#6a4', acts: ['Check', 'Compliment', 'Devour'] },
+  toriel: { name: 'Toriel', hp: 80, atk: 7, exp: 0, color: '#fcc', acts: ['Check', 'Spare'] },
+};
+
+// ── ROOMS ──
+const rooms = [
+  { name: 'Flowey', rnd: false },
+  { name: 'Entrance', rnd: false },
+  { name: 'Puzzle Room 1', rnd: false },
+  { name: 'Long Corridor', rnd: true },
+  { name: 'Toriel\'s Home', rnd: false },
+  { name: 'Toriel Boss', rnd: false },
+];
+
+// ── UPDATE ──
+function update() {
+  frame++;
+  
+  if (state === STATE.INTRO) {
+    if (frame > 280) state = STATE.DIALOG, dialogIdx = 0, dialogText = "Howdy.\nI'm FLOWEY.", txt('Howdy.\nI\'m FLOWEY.');
+  }
+  
+  if (state === STATE.DIALOG) {
+    dialogIdx += 1.5;
+    if (jp['z']) {
+      const dialogs = [
+        "Howdy.\nI'm FLOWEY.",
+        "In this world,\nit's KILL or\nBE KILLED.",
+        "That's the only way\nto survive.",
+        "Let me show you\nhow to fight.",
+      ];
+      if (dialogIdx/3 >= dialogs.length) {
+        state = STATE.OVERWORLD;
+        curRoom = 1;
+        txt("...");
+      } else {
+        dialogIdx = 0;
+        dialogText = dialogs[Math.min(dialogs.length-1, Math.floor(dialogIdx/3)+1)];
+      }
+    }
+  }
+
+  if (state === STATE.OVERWORLD) {
+    if (jp['z']) {
+      // Start battle or advance room
+      const r = rooms[curRoom];
+      if (r.rnd || curRoom === 5) {
+        // Battle
+        const enemyList = curRoom === 1 ? ['froggit'] : curRoom === 2 ? ['whimsun'] : curRoom === 3 ? ['loox', 'vegetoid'] : curRoom === 4 ? [] : ['toriel'];
+        if (enemyList.length > 0) {
+          const e = enemies[enemyList[Math.floor(Math.random() * enemyList.length)]];
+          battle.enemy = e;
+          battle.hp = e.hp;
+          battle.maxHp = e.hp;
+          battle.text = `A wild ${e.name}\nappears!`;
+          battle.sel = 0;
+          battle.acted = false;
+          battle.spareCount = 0;
+          state = STATE.BATTLE;
+          sfx('confirm');
+        }
+      } else {
+        curRoom = Math.min(5, curRoom + 1);
+        if (curRoom === 5) dialogText = "Toriel: Welcome\nhome, my child.";
+      }
+    }
+    if (jp['Down'] && curRoom < rooms.length - 1) curRoom++, sfx('select');
+    if (jp['Up'] && curRoom > 0) curRoom--, sfx('select');
+  }
+
+  if (state === STATE.BATTLE) {
+    if (!battle.acted) {
+      if (jp['Left'] || jp['a']) { battle.sel = Math.max(0, battle.sel - 1); sfx('select'); }
+      if (jp['Right'] || jp['d']) { battle.sel = Math.min(3, battle.sel + 1); sfx('select'); }
+      if (jp['z']) {
+        sfx('confirm');
+        const act = ['FIGHT', 'ACT', 'ITEM', 'MERCY'][battle.sel];
+        if (act === 'FIGHT') {
+          state = STATE.FIGHT;
+          battle.text = '';
+        } else if (act === 'MERCY' && battle.spareCount >= 1) {
+          battle.enemy.spared = true;
+          battle.text = `You spared\n${battle.enemy.name}!`;
+          battle.acted = true;
+          state = STATE.DODGE;
+          battle.dFrame = 0;
+        } else if (act === 'MERCY') {
+          battle.text = `That didn't work\nthis time.`;
+          state = STATE.DODGE;
+          battle.dFrame = 0;
+        }
+      }
+    } else if (battle.dFrame > 90) {
+      if (battle.enemy.spared || battle.hp <= 0) {
+        state = STATE.OVERWORLD;
+        if (battle.hp <= 0) {
+          curRoom = Math.min(4, curRoom + 1);
+          player.exp += battle.enemy.exp;
+        } else {
+          curRoom = Math.min(5, curRoom + 1);
+        }
+      }
+    }
+  }
+
+  if (state === STATE.FIGHT) {
+    if (jp['z']) {
+      const timing = Math.abs(frame % 60 - 30) / 30;
+      const dmg = timing < 0.2 ? 12 : timing < 0.4 ? 8 : 4;
+      battle.hp -= dmg;
+      sfx('hit');
+      if (battle.hp <= 0) {
+        battle.text = `Defeated\n${battle.enemy.name}!`;
+        battle.acted = true;
+      } else {
+        battle.text = `Hit! -${dmg} HP`;
+        battle.acted = true;
+      }
+      state = STATE.DODGE;
+      battle.dFrame = 0;
+      bullets = [];
+      spawnBullets();
+    }
+  }
+
+  if (state === STATE.DODGE) {
+    battle.dFrame++;
+    // Move heart
+    if (keys['Up']) heart.y -= heart.speed;
+    if (keys['Down']) heart.y += heart.speed;
+    if (keys['Left']) heart.x -= heart.speed;
+    if (keys['Right']) heart.x += heart.speed;
+    heart.x = Math.max(100, Math.min(W - 100, heart.x));
+    heart.y = Math.max(210, Math.min(H - 100, heart.y));
+
+    // Update bullets
+    bullets.forEach(b => {
+      b.x += b.vx;
+      b.y += b.vy;
+      // Collision
+      if (Math.hypot(b.x - heart.x, b.y - heart.y) < 10) {
+        player.hp = Math.max(0, player.hp - 2);
+        if (player.hp <= 0) state = STATE.OVER, sfx('defeat');
+      }
+    });
+    bullets = bullets.filter(b => b.x > 0 && b.x < W && b.y > 0 && b.y < H);
+
+    // End dodge
+    if (battle.dFrame > 120) {
+      state = STATE.BATTLE;
+      battle.acted = false;
+      battle.spareCount++;
+    }
+  }
+
+  if (state === STATE.OVER) {
+    if (jp['z']) { frame = 0; state = STATE.INTRO; player.hp = 20; }
+  }
+
+  if (state === STATE.END) {
+    if (jp['z']) { window.location.reload(); }
+  }
+
+  // Clear just-pressed
+  for (const k in jp) delete jp[k];
+}
+
+function spawnBullets() {
+  if (!battle.enemy) return;
+  const e = battle.enemy.name;
+  if (e === 'Froggit') {
+    for (let i = 0; i < 5; i++) {
+      const a = Math.PI * 2 / 5 * i + frame / 20;
+      bullets.push({ x: W/2, y: 250, vx: Math.cos(a) * 2, vy: Math.sin(a) * 2, r: 4 });
+    }
+  } else if (e === 'Whimsun') {
+    for (let i = 0; i < 6; i++) {
+      bullets.push({ x: 100 + i * 85, y: 150, vx: 0, vy: 2.5, r: 3 });
+    }
+  } else if (e === 'Loox') {
+    for (let i = 0; i < 8; i++) {
+      const a = Math.PI * 2 / 8 * i + frame / 10;
+      bullets.push({ x: W/2 + Math.cos(a)*80, y: 250 + Math.sin(a)*50, vx: Math.cos(a)*2.5, vy: Math.sin(a)*2.5, r: 5 });
+    }
+  } else if (e === 'Vegetoid') {
+    for (let i = 0; i < 5; i++) {
+      bullets.push({ x: 120 + Math.random() * 400, y: 100, vx: 0, vy: 2.5, r: 5 });
+    }
+  } else if (e === 'Toriel') {
+    const phase = Math.max(0, 1 - battle.spareCount / 5);
+    for (let i = 0; i < 6 * phase; i++) {
+      bullets.push({ x: 100 + Math.random() * 440, y: 180 + battle.dFrame, vx: 0, vy: 1.5, r: 6 });
+    }
+  }
+}
+
+// ── DRAW ──
+function draw() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#2a0845';
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === STATE.INTRO) {
+    const t = frame / 3;
+    // Flowey
+    ctx.fillStyle = '#ff0';
+    ctx.beginPath(); ctx.arc(W/2, 80, 35 + Math.sin(t/10)*3, 0, Math.PI*2); ctx.fill();
+    for (let i = 0; i < 6; i++) {
+      const a = Math.PI * 2 / 6 * i + t/20;
+      ctx.beginPath();
+      ctx.ellipse(W/2 + Math.cos(a)*60, 80 + Math.sin(a)*60, 18, 18, a, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#000';
+    ctx.fillRect(W/2 - 12, 72, 8, 7);
+    ctx.fillRect(W/2 + 5, 72, 8, 7);
+    ctx.beginPath(); ctx.arc(W/2, 92, 8, 0, Math.PI); ctx.fill();
+    // Text
+    ctx.fillStyle = '#000'; ctx.fillRect(30, 160, W - 60, 240);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(30, 160, W - 60, 240);
+    ctx.fillStyle = '#fff'; ctx.font = '10px "Press Start 2P"';
+    ctx.fillText("Howdy...", 60, 200);
+  }
+
+  if (state === STATE.DIALOG) {
+    const chars = Math.floor(dialogIdx / 3);
+    ctx.fillStyle = '#000'; ctx.fillRect(30, 150, W - 60, 260);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(30, 150, W - 60, 260);
+    ctx.fillStyle = '#fff'; ctx.font = '10px "Press Start 2P"';
+    let vis = '';
+    for (let i = 0; i < Math.min(chars, dialogText.length); i++) vis += dialogText[i];
+    const lines = vis.split('\n');
+    lines.forEach((l, i) => ctx.fillText(l, 60, 190 + i*30));
+  }
+
+  if (state === STATE.OVERWORLD) {
+    ctx.fillStyle = '#fff'; ctx.font = '12px "Press Start 2P"';
+    ctx.fillText(rooms[curRoom].name, 20, 40);
+    ctx.fillStyle = '#f44'; ctx.beginPath(); ctx.arc(W/2, H/2, 8, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#888'; ctx.font = '8px "Press Start 2P"';
+    ctx.fillText(`LV ${player.lv}  HP ${player.hp}/${player.maxHp}`, 20, H - 10);
+  }
+
+  if (state === STATE.BATTLE || state === STATE.FIGHT || state === STATE.DODGE) {
+    // Enemy
+    ctx.fillStyle = battle.enemy.color;
+    ctx.beginPath(); ctx.arc(W/2, 120, 35, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.fillRect(W/2 - 12, 110, 8, 8);
+    ctx.fillRect(W/2 + 5, 110, 8, 8);
+    // Enemy name & HP
+    ctx.fillStyle = '#fff'; ctx.font = '10px "Press Start 2P"'; ctx.fillText(battle.enemy.name, 30, 40);
+    ctx.fillStyle = '#f00'; ctx.fillRect(30, 55, 150, 10);
+    ctx.fillStyle = '#ff0'; ctx.fillRect(30, 55, 150 * (battle.hp / battle.maxHp), 10);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(30, 55, 150, 10);
+    // Text
+    ctx.fillStyle = '#000'; ctx.fillRect(20, 90, W - 40, 90);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(20, 90, W - 40, 90);
+    ctx.fillStyle = '#fff'; ctx.font = '8px "Press Start 2P"';
+    const lines = battle.text.split('\n');
+    lines.forEach((l, i) => ctx.fillText(l, 40, 110 + i * 14));
+
+    if (state === STATE.FIGHT) {
+      ctx.fillStyle = 'rgba(100,100,100,0.3)'; ctx.fillRect(60, 240, 520, 40);
+      const pos = (frame % 60) / 60;
+      ctx.fillStyle = '#0f0'; ctx.fillRect(60 + pos * 520, 240, 20, 40);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(60, 240, 520, 40);
+    }
+
+    if (state === STATE.DODGE) {
+      ctx.fillStyle = '#111'; ctx.fillRect(80, 200, 480, 100);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(80, 200, 480, 100);
+      ctx.fillStyle = '#f44';
+      bullets.forEach(b => { ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill(); });
+      ctx.fillStyle = '#f44'; ctx.beginPath(); ctx.arc(heart.x, heart.y, 7, 0, Math.PI*2); ctx.fill();
+    }
+
+    if (state === STATE.BATTLE && !battle.acted) {
+      const btns = ['FIGHT', 'ACT', 'ITEM', 'MERCY'];
+      btns.forEach((b, i) => {
+        ctx.fillStyle = i === battle.sel ? '#333' : '#000';
+        ctx.fillRect(30 + i*150, 320, 130, 40);
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(30 + i*150, 320, 130, 40);
+        ctx.fillStyle = '#f80'; ctx.font = '8px "Press Start 2P"'; ctx.fillText(b, 50 + i*150, 345);
+      });
+    }
+
+    // Player HP
+    ctx.fillStyle = '#000'; ctx.fillRect(20, H - 60, W - 40, 50);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(20, H - 60, W - 40, 50);
+    ctx.fillStyle = '#fff'; ctx.font = '8px "Press Start 2P"';
+    ctx.fillText(`${player.name}  LV ${player.lv}`, 40, H - 38);
+    ctx.fillStyle = '#f00'; ctx.fillRect(40, H - 28, 120, 8);
+    ctx.fillStyle = '#ff0'; ctx.fillRect(40, H - 28, 120 * (player.hp / player.maxHp), 8);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(40, H - 28, 120, 8);
+  }
+
+  if (state === STATE.OVER) {
+    ctx.fillStyle = 'rgba(0,0,0,0.9)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#f44'; ctx.font = '24px "Press Start 2P"';
+    ctx.fillText('YOU DIED', W/2 - 80, H/2 - 20);
+    ctx.fillStyle = '#fff'; ctx.font = '8px "Press Start 2P"';
+    ctx.fillText('Press Z to retry', W/2 - 60, H/2 + 40);
+  }
+
+  if (state === STATE.END) {
+    ctx.fillStyle = '#2a0845'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff'; ctx.font = '14px "Press Start 2P"';
+    ctx.fillText("You've left the\nRuins.", W/2 - 60, H/2 - 40);
+    ctx.font = '8px "Press Start 2P"';
+    ctx.fillText("Press Z", W/2 - 30, H/2 + 40);
+  }
+}
+
+// ── LOOP ──
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
